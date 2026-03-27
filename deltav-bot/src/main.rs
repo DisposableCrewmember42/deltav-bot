@@ -1,8 +1,13 @@
+use std::time::Duration;
+
 use jsonwebtoken::EncodingKey;
 use octocrab::models::AppId;
-use tracing::error;
+use tracing::{Level, error, info, span};
 
 use crate::github::{GhAppConfig, GitHubService};
+
+use fred::prelude::{ClientLike, Config as RedisConfig, ReconnectPolicy};
+use fred::types::Builder as RedisBuilder;
 
 mod direction;
 mod github;
@@ -21,6 +26,9 @@ macro_rules! required_env {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
+
+    let span = span!(Level::INFO, "main");
+    let _enter = span.enter();
 
     required_env!("GH_REPO_OWNER", repo_owner);
     required_env!("GH_REPO_NAME", repo_name);
@@ -47,6 +55,33 @@ async fn main() {
     }
 
     required_env!("DISCORD_TOKEN", discord_token);
+
+    required_env!("REDIS_URL", redis_url);
+    let Ok(config) = RedisConfig::from_url(&redis_url) else {
+        error!("Failed to create Redis config from URL '{redis_url}'.");
+        return;
+    };
+
+    info!("Setting up Redis connection.");
+    let redis_pool = match RedisBuilder::from_config(config)
+        .with_connection_config(|config| {
+            config.connection_timeout = Duration::from_secs(10);
+        })
+        .set_policy(ReconnectPolicy::new_exponential(0, 100, 30_000, 2))
+        .build_pool(8)
+    {
+        Ok(x) => x,
+        Err(e) => {
+            error!("Failed to build Redis pool: {e:#?}");
+            return;
+        }
+    };
+
+    if let Err(e) = redis_pool.init().await {
+        error!("Failed to connect to Redis: {e:#?}");
+        return;
+    }
+    info!("Sucessfully connected to Redis.");
 
     let Ok(mut gh) = GitHubService::initialize(
         webhook_port,
