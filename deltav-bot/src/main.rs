@@ -12,7 +12,7 @@ macro_rules! get_env {
     ($variable_name: expr, $local_var: ident) => {
         let val: &str = $variable_name;
         let Ok($local_var) = std::env::var(val) else {
-            tracing::error!("Missing {}", stringify!($variable_name));
+            tracing::error!("Missing environment variable: {}", val);
             return;
         };
     };
