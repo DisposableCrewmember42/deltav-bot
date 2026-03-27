@@ -35,11 +35,22 @@ async fn main() {
         return;
     };
 
+    get_env!("WEBHOOK_PORT", webhook_port);
+    let Ok(webhook_port) = webhook_port.parse::<u16>() else {
+        error!("Invalid Webhook port. Must be u16.");
+        return;
+    };
+    get_env!("WEBHOOK_SECRET", webhook_secret);
+    if webhook_secret.len() < 16 {
+        error!("The Webhook secret must be at least 16 characters long.");
+        return;
+    }
+
     get_env!("DISCORD_TOKEN", discord_token);
 
     let Ok(mut gh) = GitHubService::initialize(
-        8080,
-        "yeet".into(),
+        webhook_port,
+        webhook_secret,
         GhAppConfig {
             id: AppId(app_id),
             key: app_key,
