@@ -1,0 +1,258 @@
+use std::sync::Arc;
+
+use axum::{
+    Router,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
+};
+use jsonwebtoken::EncodingKey;
+use octocrab::{
+    Octocrab, OctocrabBuilder,
+    models::{
+        AppId,
+        webhook_events::{
+            WebhookEvent, WebhookEventPayload, payload::PullRequestWebhookEventAction,
+        },
+    },
+};
+use serde::Deserialize;
+use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
+use tracing::{Level, error, info, span, warn};
+
+pub struct GhAppConfig {
+    pub id: AppId,
+    pub key: EncodingKey,
+    pub repo_owner: String,
+    pub repo_name: String,
+}
+
+pub struct GitHubService {
+    pub webhook_thread: JoinHandle<()>,
+    pub webhook_receiver: mpsc::Receiver<GitHubMessage>,
+    pub octo_app: Arc<Octocrab>,
+    pub octo_install: Arc<Octocrab>,
+}
+
+#[derive(Clone, Debug)]
+pub enum GitHubMessage {
+    PrOpened {
+        pr_id: u64,
+        pr_title: String,
+        pr_body: Option<String>,
+    },
+    PrEdited {
+        pr_id: u64,
+        pr_title: String,
+        pr_body: Option<String>,
+    },
+    PrClosed {
+        pr_id: u64,
+    },
+    PrMerged {
+        pr_id: u64,
+        merged_by: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ServerState {
+    sender: mpsc::Sender<GitHubMessage>,
+    webhook_secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct WebhookQuery {
+    key: String,
+}
+
+async fn on_webhook_request(
+    State(state): State<ServerState>,
+    query: Query<WebhookQuery>,
+    headers: HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    let span = span!(Level::INFO, "webhook_request");
+    let _enter = span.enter();
+
+    if query.key != state.webhook_secret {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    let Some(event_header) = headers.get("X-GitHub-Event").and_then(|x| x.to_str().ok()) else {
+        warn!("Authorized request missing header!!");
+        return StatusCode::BAD_REQUEST;
+    };
+
+    let Ok(event) = WebhookEvent::try_from_header_and_body(event_header, &body) else {
+        return StatusCode::BAD_REQUEST;
+    };
+
+    use {PullRequestWebhookEventAction::*, WebhookEventPayload::*};
+    match event.specific {
+        PullRequest(p) => match p.action {
+            Closed => {
+                if p.pull_request.merged.is_none() {
+                    warn!(
+                        "Received PullRequest Close event with 'merged' unset, assuming closed without merging."
+                    );
+                }
+
+                if p.pull_request.merged.unwrap_or_default() {
+                    state
+                        .sender
+                        .send(GitHubMessage::PrMerged {
+                            pr_id: p.number,
+                            merged_by: p
+                                .pull_request
+                                .merged_by
+                                .and_then(|x| Some(x.login))
+                                .unwrap_or("UNKNOWN USER".into()),
+                        })
+                        .await
+                        .expect("Failed to send PrMerged message");
+                } else {
+                    state
+                        .sender
+                        .send(GitHubMessage::PrClosed { pr_id: p.number })
+                        .await
+                        .expect("Failed to send PrClosed message");
+                }
+            }
+
+            Opened | Reopened | ReadyForReview => {
+                if let Some(draft) = p.pull_request.draft
+                    && draft
+                {
+                    info!(
+                        "Received PullRequest Open event for draft pr {}. Ignoring.",
+                        p.number
+                    );
+                    return StatusCode::OK;
+                }
+
+                let Some(title) = p.pull_request.title else {
+                    error!("Pull request #{} opened without title?!", p.number);
+                    return StatusCode::BAD_REQUEST;
+                };
+                state
+                    .sender
+                    .send(GitHubMessage::PrOpened {
+                        pr_id: p.number,
+                        pr_title: title,
+                        pr_body: p.pull_request.body,
+                    })
+                    .await
+                    .expect("Failed to send PrOpened message");
+            }
+
+            Edited => {
+                let Some(title) = p.pull_request.title else {
+                    error!("Pull request #{} edited without title?!", p.number);
+                    return StatusCode::BAD_REQUEST;
+                };
+                state
+                    .sender
+                    .send(GitHubMessage::PrEdited {
+                        pr_id: p.number,
+                        pr_title: title,
+                        pr_body: p.pull_request.body,
+                    })
+                    .await
+                    .expect("Failed to send PrEdited message");
+            }
+
+            _ => {}
+        },
+        _ => {}
+    }
+
+    StatusCode::OK
+}
+
+async fn server_task(port: u16, webhook_secret: String, sender: mpsc::Sender<GitHubMessage>) {
+    let span = span!(Level::INFO, "webhook_server");
+    let _enter = span.enter();
+
+    let router = Router::new()
+        .route("/webhook", post(on_webhook_request))
+        .with_state(ServerState {
+            sender,
+            webhook_secret,
+        });
+
+    let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(x) => x,
+        Err(e) => {
+            error!("Webhook server could not bind to port {port}: {e:#?}");
+            return;
+        }
+    };
+
+    info!("Sucessfully bound to port {port}.");
+    if let Err(e) = axum::serve(listener, router).await {
+        error!("Axum service failed: {e:#?}");
+    }
+}
+
+impl GitHubService {
+    /// Initialize the OctoCrab API client and start the webhook server.
+    pub async fn initialize(
+        webhook_port: u16,
+        webhook_secret: String,
+        app_config: GhAppConfig,
+    ) -> Result<GitHubService, ()> {
+        let span = span!(Level::INFO, "github_init");
+        let _enter = span.enter();
+
+        info!("Initializing octocrab.");
+        let octo = match OctocrabBuilder::default()
+            .app(app_config.id, app_config.key)
+            .build()
+        {
+            Ok(x) => x,
+            Err(e) => {
+                error!("Failed to build Octocrab client: {e:#?}");
+                return Err(());
+            }
+        };
+
+        info!(
+            "Finding installation for {}/{}",
+            app_config.repo_owner, app_config.repo_name
+        );
+
+        let install = match octo
+            .apps()
+            .get_repository_installation(app_config.repo_owner, app_config.repo_name)
+            .await
+        {
+            Ok(x) => x,
+            Err(e) => {
+                error!("Failed to get repository installation: {e:#?}");
+                return Err(());
+            }
+        };
+
+        info!(
+            "Got installation with ID {} successfully. Our permissions are {:?}.",
+            install.id, install.permissions
+        );
+
+        let octo_install = octo
+        .installation(install.id)
+        .expect("Successfully authorized as GitHub App before. The installation call only returns an error if cached auth data is missing, this shouldn't be happening.");
+
+        info!("Spawning webhook server task.");
+        let (sender, receiver) = mpsc::channel(64);
+        let handle = tokio::spawn(server_task(webhook_port, webhook_secret, sender));
+
+        Ok(GitHubService {
+            webhook_thread: handle,
+            webhook_receiver: receiver,
+            octo_app: Arc::new(octo),
+            octo_install: Arc::new(octo_install),
+        })
+    }
+}
