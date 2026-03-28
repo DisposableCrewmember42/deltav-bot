@@ -1,0 +1,88 @@
+use std::sync::Arc;
+
+use fred::clients::Pool as RedisPool;
+use poise::serenity_prelude::{self as serenity, Client, GatewayIntents, GuildId};
+use tokio::task::JoinHandle;
+use tracing::{error, info};
+
+use crate::github::GitHub;
+
+struct Data {
+    gh: Arc<GitHub>,
+    redis: RedisPool,
+}
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
+
+/// Echos the provided text back at you
+#[poise::command(slash_command, prefix_command)]
+async fn echo(ctx: Context<'_>, #[description = "What to echo"] text: String) -> Result<(), Error> {
+    ctx.say(text).await?;
+    Ok(())
+}
+
+async fn bot_task(mut client: Client) {
+    info!("Starting client");
+    if let Err(e) = client.start().await {
+        error!("Discord client failed: {e:#?}");
+    }
+}
+
+pub async fn initialize(
+    token: String,
+    github: GitHub,
+    redis_pool: RedisPool,
+) -> Result<JoinHandle<()>, ()> {
+    info!("Initializing framework.");
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![echo()],
+            event_handler: |ctx, event, framework, data| {
+                Box::pin(event_handler(ctx, event, framework, data))
+            },
+            ..Default::default()
+        })
+        .setup(|ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data {
+                    gh: Arc::new(github),
+                    redis: redis_pool,
+                })
+            })
+        })
+        .build();
+
+    let intents = GatewayIntents::GUILD_MESSAGES;
+    let client = match serenity::ClientBuilder::new(token, intents)
+        .framework(framework)
+        .await
+    {
+        Ok(x) => x,
+        Err(e) => {
+            error!("Failed to build client: {e:#?}");
+            return Err(());
+        }
+    };
+
+    info!("Spawning Discord bot task.");
+    Ok(tokio::spawn(bot_task(client)))
+}
+
+async fn event_handler(
+    ctx: &serenity::Context,
+    event: &serenity::FullEvent,
+    _framework: poise::FrameworkContext<'_, Data, Error>,
+    data: &Data,
+) -> Result<(), Error> {
+    match event {
+        serenity::FullEvent::Ready { data_about_bot } => {
+            info!("Logged in as '{}'", data_about_bot.user.name);
+
+            let guild_ids: Vec<u64> = data_about_bot.guilds.iter().map(|x| x.id.get()).collect();
+            info!("Present in {} guilds: {:?}", guild_ids.len(), guild_ids);
+        }
+        _ => {}
+    }
+    Ok(())
+}

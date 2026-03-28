@@ -13,13 +13,14 @@ use octocrab::{
     models::{
         AppId,
         webhook_events::{
-            WebhookEvent, WebhookEventPayload, payload::PullRequestWebhookEventAction,
+            WebhookEvent, WebhookEventPayload,
+            payload::{IssueCommentWebhookEventAction, PullRequestWebhookEventAction},
         },
     },
 };
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
-use tracing::{Level, error, info, span, warn};
+use tracing::{error, info, warn};
 
 pub struct GhAppConfig {
     pub id: AppId,
@@ -28,11 +29,16 @@ pub struct GhAppConfig {
     pub repo_name: String,
 }
 
-pub struct GitHubService {
-    pub webhook_thread: JoinHandle<()>,
-    pub webhook_receiver: mpsc::Receiver<GitHubMessage>,
-    pub octo_app: Arc<Octocrab>,
-    pub octo_install: Arc<Octocrab>,
+pub struct GitHub {
+    pub octo_app: Octocrab,
+    pub octo_install: Octocrab,
+    pub repo_owner: String,
+    pub repo_name: String,
+}
+
+pub struct WebhookServer {
+    pub thread: JoinHandle<()>,
+    pub receiver: mpsc::Receiver<GitHubMessage>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +60,11 @@ pub enum GitHubMessage {
         pr_id: u64,
         merged_by: String,
     },
+    AuthorCommented {
+        issue_id: u64,
+        username: String,
+        comment: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -73,9 +84,6 @@ async fn on_webhook_request(
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    let span = span!(Level::INFO, "webhook_request");
-    let _enter = span.enter();
-
     if query.key != state.webhook_secret {
         return StatusCode::UNAUTHORIZED;
     }
@@ -89,82 +97,109 @@ async fn on_webhook_request(
         return StatusCode::BAD_REQUEST;
     };
 
-    use {PullRequestWebhookEventAction::*, WebhookEventPayload::*};
+    use WebhookEventPayload::*;
     match event.specific {
-        PullRequest(p) => match p.action {
-            Closed => {
-                if p.pull_request.merged.is_none() {
-                    warn!(
-                        "Received PullRequest Close event with 'merged' unset, assuming closed without merging."
-                    );
+        PullRequest(p) => {
+            use PullRequestWebhookEventAction::*;
+            match p.action {
+                Closed => {
+                    if p.pull_request.merged.is_none() {
+                        warn!(
+                            "Received PullRequest Close event with 'merged' unset, assuming closed without merging."
+                        );
+                    }
+
+                    if p.pull_request.merged.unwrap_or_default() {
+                        state
+                            .sender
+                            .send(GitHubMessage::PrMerged {
+                                pr_id: p.number,
+                                merged_by: p
+                                    .pull_request
+                                    .merged_by
+                                    .and_then(|x| Some(x.login))
+                                    .unwrap_or("UNKNOWN USER".into()),
+                            })
+                            .await
+                            .expect("Failed to send PrMerged message");
+                    } else {
+                        state
+                            .sender
+                            .send(GitHubMessage::PrClosed { pr_id: p.number })
+                            .await
+                            .expect("Failed to send PrClosed message");
+                    }
                 }
 
-                if p.pull_request.merged.unwrap_or_default() {
+                Opened | Reopened | ReadyForReview => {
+                    if let Some(draft) = p.pull_request.draft
+                        && draft
+                    {
+                        info!(
+                            "Received PullRequest Open event for draft pr {}. Ignoring.",
+                            p.number
+                        );
+                        return StatusCode::OK;
+                    }
+
+                    let Some(title) = p.pull_request.title else {
+                        error!("Pull request #{} opened without title?!", p.number);
+                        return StatusCode::BAD_REQUEST;
+                    };
                     state
                         .sender
-                        .send(GitHubMessage::PrMerged {
+                        .send(GitHubMessage::PrOpened {
                             pr_id: p.number,
-                            merged_by: p
-                                .pull_request
-                                .merged_by
-                                .and_then(|x| Some(x.login))
-                                .unwrap_or("UNKNOWN USER".into()),
+                            pr_title: title,
+                            pr_body: p.pull_request.body,
                         })
                         .await
-                        .expect("Failed to send PrMerged message");
-                } else {
+                        .expect("Failed to send PrOpened message");
+                }
+
+                Edited => {
+                    let Some(title) = p.pull_request.title else {
+                        error!("Pull request edited without title: {p:#?}");
+                        return StatusCode::BAD_REQUEST;
+                    };
                     state
                         .sender
-                        .send(GitHubMessage::PrClosed { pr_id: p.number })
+                        .send(GitHubMessage::PrEdited {
+                            pr_id: p.number,
+                            pr_title: title,
+                            pr_body: p.pull_request.body,
+                        })
                         .await
-                        .expect("Failed to send PrClosed message");
-                }
-            }
-
-            Opened | Reopened | ReadyForReview => {
-                if let Some(draft) = p.pull_request.draft
-                    && draft
-                {
-                    info!(
-                        "Received PullRequest Open event for draft pr {}. Ignoring.",
-                        p.number
-                    );
-                    return StatusCode::OK;
+                        .expect("Failed to send PrEdited message");
                 }
 
-                let Some(title) = p.pull_request.title else {
-                    error!("Pull request #{} opened without title?!", p.number);
-                    return StatusCode::BAD_REQUEST;
-                };
-                state
-                    .sender
-                    .send(GitHubMessage::PrOpened {
-                        pr_id: p.number,
-                        pr_title: title,
-                        pr_body: p.pull_request.body,
-                    })
-                    .await
-                    .expect("Failed to send PrOpened message");
+                _ => {}
+            }
+        }
+
+        IssueComment(c) => {
+            if c.action != IssueCommentWebhookEventAction::Created
+                || c.comment.user.login != c.issue.user.login
+            {
+                return StatusCode::OK;
             }
 
-            Edited => {
-                let Some(title) = p.pull_request.title else {
-                    error!("Pull request #{} edited without title?!", p.number);
-                    return StatusCode::BAD_REQUEST;
-                };
-                state
-                    .sender
-                    .send(GitHubMessage::PrEdited {
-                        pr_id: p.number,
-                        pr_title: title,
-                        pr_body: p.pull_request.body,
-                    })
-                    .await
-                    .expect("Failed to send PrEdited message");
-            }
+            let Some(body) = c.comment.body else {
+                error!("Received comment without body: {c:#?}");
+                return StatusCode::BAD_REQUEST;
+            };
 
-            _ => {}
-        },
+            state
+                .sender
+                .send(GitHubMessage::AuthorCommented {
+                    issue_id: c.issue.number,
+                    username: c.comment.user.login,
+                    comment: body,
+                })
+                .await
+                .expect("Failed to send PrEdited message");
+        }
+
         _ => {}
     }
 
@@ -172,9 +207,6 @@ async fn on_webhook_request(
 }
 
 async fn server_task(port: u16, webhook_secret: String, sender: mpsc::Sender<GitHubMessage>) {
-    let span = span!(Level::INFO, "webhook_server");
-    let _enter = span.enter();
-
     let router = Router::new()
         .route("/webhook", post(on_webhook_request))
         .with_state(ServerState {
@@ -196,16 +228,13 @@ async fn server_task(port: u16, webhook_secret: String, sender: mpsc::Sender<Git
     }
 }
 
-impl GitHubService {
+impl GitHub {
     /// Initialize the OctoCrab API client and start the webhook server.
     pub async fn initialize(
         webhook_port: u16,
         webhook_secret: String,
         app_config: GhAppConfig,
-    ) -> Result<GitHubService, ()> {
-        let span = span!(Level::INFO, "github_init");
-        let _enter = span.enter();
-
+    ) -> Result<(WebhookServer, GitHub), ()> {
         info!("Initializing octocrab.");
         let octo = match OctocrabBuilder::default()
             .app(app_config.id, app_config.key)
@@ -225,7 +254,7 @@ impl GitHubService {
 
         let install = match octo
             .apps()
-            .get_repository_installation(app_config.repo_owner, app_config.repo_name)
+            .get_repository_installation(&app_config.repo_owner, &app_config.repo_name)
             .await
         {
             Ok(x) => x,
@@ -248,11 +277,17 @@ impl GitHubService {
         let (sender, receiver) = mpsc::channel(64);
         let handle = tokio::spawn(server_task(webhook_port, webhook_secret, sender));
 
-        Ok(GitHubService {
-            webhook_thread: handle,
-            webhook_receiver: receiver,
-            octo_app: Arc::new(octo),
-            octo_install: Arc::new(octo_install),
-        })
+        Ok((
+            WebhookServer {
+                thread: handle,
+                receiver,
+            },
+            GitHub {
+                octo_app: octo,
+                octo_install: octo_install,
+                repo_owner: app_config.repo_owner,
+                repo_name: app_config.repo_name,
+            },
+        ))
     }
 }

@@ -4,14 +4,13 @@ use jsonwebtoken::EncodingKey;
 use octocrab::models::AppId;
 use tracing::{Level, error, info, span};
 
-use crate::github::{GhAppConfig, GitHubService};
+use crate::github::{GhAppConfig, GitHub};
 
 use fred::prelude::{ClientLike, Config as RedisConfig, ReconnectPolicy};
 use fred::types::Builder as RedisBuilder;
 
-mod direction;
+mod discord;
 mod github;
-mod relays;
 
 macro_rules! required_env {
     ($variable_name: expr, $local_var: ident) => {
@@ -26,9 +25,6 @@ macro_rules! required_env {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
-
-    let span = span!(Level::INFO, "main");
-    let _enter = span.enter();
 
     required_env!("GH_REPO_OWNER", repo_owner);
     required_env!("GH_REPO_NAME", repo_name);
@@ -83,7 +79,7 @@ async fn main() {
     }
     info!("Sucessfully connected to Redis.");
 
-    let Ok(mut gh) = GitHubService::initialize(
+    let Ok((mut hook, gh)) = GitHub::initialize(
         webhook_port,
         webhook_secret,
         GhAppConfig {
@@ -99,9 +95,22 @@ async fn main() {
         return;
     };
 
-    while let Some(message) = gh.webhook_receiver.recv().await {
+    let Ok(bot_thread) = discord::initialize(discord_token, gh, redis_pool).await else {
+        error!("[FATAL] Discord bot failed to initialize.");
+        return;
+    };
+
+    // TODO: Remove debug code
+    while let Some(message) = hook.receiver.recv().await {
         println!("{message:#?}")
     }
 
-    let _ = gh.webhook_thread.await;
+    tokio::select! {
+       _ = hook.thread => {
+           info!("GitHub webhook shut down. Exiting.")
+       }
+       _ = bot_thread => {
+           info!("Discord bot shut down. Exiting.")
+       }
+    }
 }
