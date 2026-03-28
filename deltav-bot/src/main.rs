@@ -17,7 +17,7 @@ macro_rules! required_env {
     ($variable_name: expr, $local_var: ident) => {
         let val: &str = $variable_name;
         let Ok($local_var) = std::env::var(val) else {
-            tracing::error!("Missing environment variable: {}", val);
+            tracing::error!("[FATAL] Missing environment variable: {}", val);
             return;
         };
     };
@@ -34,23 +34,23 @@ async fn main() {
     required_env!("GH_REPO_NAME", repo_name);
     required_env!("GH_APP_KEY", app_key);
     let Ok(app_key) = EncodingKey::from_rsa_pem(app_key.as_bytes()) else {
-        error!("Invalid GitHub Application Key. Must be an RSA key in PEM format.");
+        error!("[FATAL] Invalid GitHub Application Key. Must be an RSA key in PEM format.");
         return;
     };
     required_env!("GH_APP_ID", app_id);
     let Ok(app_id) = app_id.parse::<u64>() else {
-        error!("Invalid GitHub Application ID. Must be u64.");
+        error!("[FATAL] Invalid GitHub Application ID. Must be u64.");
         return;
     };
 
     required_env!("WEBHOOK_PORT", webhook_port);
     let Ok(webhook_port) = webhook_port.parse::<u16>() else {
-        error!("Invalid Webhook port. Must be u16.");
+        error!("[FATAL] Invalid Webhook port. Must be u16.");
         return;
     };
     required_env!("WEBHOOK_SECRET", webhook_secret);
     if webhook_secret.len() < 16 {
-        error!("The Webhook secret must be at least 16 characters long.");
+        error!("[FATAL] The Webhook secret must be at least 16 characters long.");
         return;
     }
 
@@ -58,7 +58,7 @@ async fn main() {
 
     required_env!("REDIS_URL", redis_url);
     let Ok(config) = RedisConfig::from_url(&redis_url) else {
-        error!("Failed to create Redis config from URL '{redis_url}'.");
+        error!("[FATAL] Failed to create Redis config from URL '{redis_url}'.");
         return;
     };
 
@@ -72,13 +72,13 @@ async fn main() {
     {
         Ok(x) => x,
         Err(e) => {
-            error!("Failed to build Redis pool: {e:#?}");
+            error!("[FATAL] Failed to build Redis pool: {e:#?}");
             return;
         }
     };
 
     if let Err(e) = redis_pool.init().await {
-        error!("Failed to connect to Redis: {e:#?}");
+        error!("[FATAL] Failed to connect to Redis: {e:#?}");
         return;
     }
     info!("Sucessfully connected to Redis.");
@@ -95,7 +95,7 @@ async fn main() {
     )
     .await
     else {
-        error!("GitHub integration failed to initialize, shutting down!");
+        error!("[FATAL] GitHub integration failed to initialize.");
         return;
     };
 
