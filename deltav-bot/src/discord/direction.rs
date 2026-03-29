@@ -18,7 +18,7 @@ use crate::{
 
 pub async fn direction_github_task(
     ctx: poise::serenity_prelude::Context,
-    receiver: Arc<Mutex<Receiver<GitHubMessage>>>, // TODO: Shouldn't have to be like this, but it works for now.
+    receiver: Arc<Mutex<Receiver<GitHubMessage>>>,
     db: Pool<Sqlite>,
     gh: Arc<GitHub>,
 ) {
