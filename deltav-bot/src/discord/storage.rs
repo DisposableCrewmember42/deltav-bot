@@ -86,7 +86,7 @@ pub async fn upsert_forum(
         INSERT INTO direction_forums (channel_id, private, tag_cr_approved, tag_cr_denied, tag_pr_closed, tag_pr_merged)
         VALUES(?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(channel_id)
-        DO UPDATE SET private=excluded.private;
+        DO UPDATE SET private=excluded.private, tag_cr_approved=excluded.tag_cr_approved, tag_cr_denied=excluded.tag_cr_denied, tag_pr_closed=excluded.tag_pr_closed, tag_pr_merged=excluded.tag_pr_merged;
         "#,
         channel_id, private, tag_cr_approved, tag_cr_denied, tag_pr_closed, tag_pr_merged
     )
