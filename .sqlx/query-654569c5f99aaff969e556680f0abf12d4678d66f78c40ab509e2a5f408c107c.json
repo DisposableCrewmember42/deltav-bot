@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM direction_forums WHERE channel_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "654569c5f99aaff969e556680f0abf12d4678d66f78c40ab509e2a5f408c107c"
+}

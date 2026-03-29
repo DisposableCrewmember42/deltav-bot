@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO direction_forums (channel_id, private, tag_cr_approved, tag_cr_denied, tag_pr_closed, tag_pr_merged)\n        VALUES(?1, ?2, ?3, ?4, ?5, ?6)\n        ON CONFLICT(channel_id)\n        DO UPDATE SET private=excluded.private;\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "5850c01fae3006bf20ee6da6db6feaf15158d3c6ee9a1f2800ffbd5f27236fd1"
+}
