@@ -1,13 +1,10 @@
-use std::time::Duration;
+use std::str::FromStr;
 
 use jsonwebtoken::EncodingKey;
 use octocrab::models::AppId;
-use tracing::{Level, error, info, span};
+use tracing::{error, info};
 
 use crate::github::{GhAppConfig, GitHub};
-
-use fred::prelude::{ClientLike, Config as RedisConfig, ReconnectPolicy};
-use fred::types::Builder as RedisBuilder;
 
 mod discord;
 mod github;
@@ -52,34 +49,35 @@ async fn main() {
 
     required_env!("DISCORD_TOKEN", discord_token);
 
-    required_env!("REDIS_URL", redis_url);
-    let Ok(config) = RedisConfig::from_url(&redis_url) else {
-        error!("[FATAL] Failed to create Redis config from URL '{redis_url}'.");
-        return;
-    };
-
-    info!("Setting up Redis connection.");
-    let redis_pool = match RedisBuilder::from_config(config)
-        .with_connection_config(|config| {
-            config.connection_timeout = Duration::from_secs(10);
-        })
-        .set_policy(ReconnectPolicy::new_exponential(0, 100, 30_000, 2))
-        .build_pool(8)
-    {
+    required_env!("DATABASE_URL", database_url);
+    let sqlite_opts = match sqlx::sqlite::SqliteConnectOptions::from_str(&database_url) {
         Ok(x) => x,
         Err(e) => {
-            error!("[FATAL] Failed to build Redis pool: {e:#?}");
+            error!("[FATAL] Failed to parse DATABASE_URL: {e:#?}");
             return;
         }
     };
 
-    if let Err(e) = redis_pool.init().await {
-        error!("[FATAL] Failed to connect to Redis: {e:#?}");
+    info!("Setting up database.");
+    let db = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(sqlite_opts.create_if_missing(true))
+        .await
+    {
+        Ok(x) => x,
+        Err(e) => {
+            error!("[FATAL] Failed to set up Database: {e:#?}");
+            return;
+        }
+    };
+
+    info!("Running migrations.");
+    if let Err(e) = sqlx::migrate!("./migrations").run(&db).await {
+        error!("[FATAL] Failed to run database migrations: {e:#?}");
         return;
     }
-    info!("Sucessfully connected to Redis.");
 
-    let Ok((mut hook, gh)) = GitHub::initialize(
+    let Ok((hook, gh)) = GitHub::initialize(
         webhook_port,
         webhook_secret,
         GhAppConfig {
@@ -95,15 +93,10 @@ async fn main() {
         return;
     };
 
-    let Ok(bot_thread) = discord::initialize(discord_token, gh, redis_pool).await else {
+    let Ok(bot_thread) = discord::initialize(discord_token, gh, db, hook.receiver).await else {
         error!("[FATAL] Discord bot failed to initialize.");
         return;
     };
-
-    // TODO: Remove debug code
-    while let Some(message) = hook.receiver.recv().await {
-        println!("{message:#?}")
-    }
 
     tokio::select! {
        _ = hook.thread => {

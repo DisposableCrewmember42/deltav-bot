@@ -1,15 +1,30 @@
 use std::sync::Arc;
 
-use fred::clients::Pool as RedisPool;
-use poise::serenity_prelude::{self as serenity, Client, GatewayIntents, GuildId};
-use tokio::task::JoinHandle;
+use poise::serenity_prelude::{
+    self as serenity, ChannelId, Client, CreateMessage, GatewayIntents, GuildId,
+};
+use sqlx::{Pool, Sqlite};
+use tokio::{
+    sync::{Mutex, mpsc::Receiver},
+    task::JoinHandle,
+};
 use tracing::{error, info};
 
-use crate::github::GitHub;
+use crate::{
+    discord::direction::{
+        direction_config, direction_forum_delete, direction_forum_upsert, direction_github_task,
+    },
+    github::{GitHub, GitHubMessage},
+};
+
+mod direction;
+mod storage;
 
 struct Data {
     gh: Arc<GitHub>,
-    redis: RedisPool,
+    db: Pool<Sqlite>,
+    // TODO: need to use the receiver in the event handler, which receives a read-only ref. there's probably a more sane way to do this, but it works for now.
+    gh_receiver: Arc<Mutex<Receiver<GitHubMessage>>>,
 }
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
@@ -31,12 +46,18 @@ async fn bot_task(mut client: Client) {
 pub async fn initialize(
     token: String,
     github: GitHub,
-    redis_pool: RedisPool,
+    db: Pool<Sqlite>,
+    receiver: Receiver<GitHubMessage>,
 ) -> Result<JoinHandle<()>, ()> {
     info!("Initializing framework.");
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![echo()],
+            commands: vec![
+                echo(),
+                direction_config(),
+                direction_forum_upsert(),
+                direction_forum_delete(),
+            ],
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
             },
@@ -47,7 +68,8 @@ pub async fn initialize(
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 Ok(Data {
                     gh: Arc::new(github),
-                    redis: redis_pool,
+                    db,
+                    gh_receiver: Arc::new(Mutex::new(receiver)),
                 })
             })
         })
@@ -81,6 +103,13 @@ async fn event_handler(
 
             let guild_ids: Vec<u64> = data_about_bot.guilds.iter().map(|x| x.id.get()).collect();
             info!("Present in {} guilds: {:?}", guild_ids.len(), guild_ids);
+
+            tokio::spawn(direction_github_task(
+                ctx.clone(),
+                data.gh_receiver.clone(),
+                data.db.clone(),
+                data.gh.clone(),
+            ));
         }
         _ => {}
     }
