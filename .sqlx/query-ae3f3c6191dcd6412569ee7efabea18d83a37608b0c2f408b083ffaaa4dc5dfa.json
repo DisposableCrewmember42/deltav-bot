@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT primary_forum_channel FROM direction_config WHERE id = 1",
+  "query": "SELECT primary_cr_forum FROM direction_config WHERE id = 1",
   "describe": {
     "columns": [
       {
-        "name": "primary_forum_channel",
+        "name": "primary_cr_forum",
         "ordinal": 0,
         "type_info": "Integer"
       }
@@ -16,5 +16,5 @@
       true
     ]
   },
-  "hash": "6ce303f36605beac1d8d54e706940faa6612e724e7160fe7f20ae06c3594d448"
+  "hash": "ae3f3c6191dcd6412569ee7efabea18d83a37608b0c2f408b083ffaaa4dc5dfa"
 }

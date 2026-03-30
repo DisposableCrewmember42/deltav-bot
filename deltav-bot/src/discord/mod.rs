@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use poise::serenity_prelude::{
-    self as serenity, ChannelId, Client, CreateMessage, GatewayIntents, GuildId,
-};
+use poise::serenity_prelude::{self as serenity, Client, GatewayIntents};
 use sqlx::{Pool, Sqlite};
 use tokio::{
     sync::{Mutex, mpsc::Receiver},

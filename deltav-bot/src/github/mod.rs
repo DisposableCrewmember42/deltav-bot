@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::cell::LazyCell;
 
 use axum::{
     Router,
@@ -18,9 +18,10 @@ use octocrab::{
         },
     },
 };
+use regex::Regex;
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct GhAppConfig {
     pub id: AppId,
@@ -47,14 +48,11 @@ pub enum GitHubMessage {
         pr_id: u64,
         pr_title: String,
         pr_body: Option<String>,
-    },
-    PrEdited {
-        pr_id: u64,
-        pr_title: String,
-        pr_body: Option<String>,
+        opened_by: String,
     },
     PrClosed {
         pr_id: u64,
+        closed_by: String,
     },
     PrMerged {
         pr_id: u64,
@@ -78,6 +76,8 @@ struct WebhookQuery {
     key: String,
 }
 
+const HTML_COMMENT_REGEX: LazyCell<Regex> = LazyCell::new(|| Regex::new("<!--(.*?)-->").unwrap());
+
 async fn on_webhook_request(
     State(state): State<ServerState>,
     query: Query<WebhookQuery>,
@@ -93,9 +93,21 @@ async fn on_webhook_request(
         return StatusCode::BAD_REQUEST;
     };
 
-    let Ok(event) = WebhookEvent::try_from_header_and_body(event_header, &body) else {
-        return StatusCode::BAD_REQUEST;
+    let body: String = body.chars().filter(|c| !c.is_control()).collect(); // remove control characters, serde_json will be angry if there are any
+    let body = HTML_COMMENT_REGEX.replace_all(&body, "").to_string(); // remove HTML comments
+
+    let event = match WebhookEvent::try_from_header_and_body(event_header, &body) {
+        Ok(x) => x,
+        Err(e) => {
+            error!("Failed to parse webhook event: {e}");
+            return StatusCode::BAD_REQUEST;
+        }
     };
+
+    let sender_login = event
+        .sender
+        .and_then(|x| Some(x.login))
+        .unwrap_or("UNKNOWN_USER".into());
 
     use WebhookEventPayload::*;
     match event.specific {
@@ -114,18 +126,17 @@ async fn on_webhook_request(
                             .sender
                             .send(GitHubMessage::PrMerged {
                                 pr_id: p.number,
-                                merged_by: p
-                                    .pull_request
-                                    .merged_by
-                                    .and_then(|x| Some(x.login))
-                                    .unwrap_or("UNKNOWN USER".into()),
+                                merged_by: sender_login,
                             })
                             .await
                             .expect("Failed to send PrMerged message");
                     } else {
                         state
                             .sender
-                            .send(GitHubMessage::PrClosed { pr_id: p.number })
+                            .send(GitHubMessage::PrClosed {
+                                pr_id: p.number,
+                                closed_by: sender_login,
+                            })
                             .await
                             .expect("Failed to send PrClosed message");
                     }
@@ -152,27 +163,11 @@ async fn on_webhook_request(
                             pr_id: p.number,
                             pr_title: title,
                             pr_body: p.pull_request.body,
+                            opened_by: sender_login,
                         })
                         .await
                         .expect("Failed to send PrOpened message");
                 }
-
-                Edited => {
-                    let Some(title) = p.pull_request.title else {
-                        error!("Pull request edited without title: {p:#?}");
-                        return StatusCode::BAD_REQUEST;
-                    };
-                    state
-                        .sender
-                        .send(GitHubMessage::PrEdited {
-                            pr_id: p.number,
-                            pr_title: title,
-                            pr_body: p.pull_request.body,
-                        })
-                        .await
-                        .expect("Failed to send PrEdited message");
-                }
-
                 _ => {}
             }
         }

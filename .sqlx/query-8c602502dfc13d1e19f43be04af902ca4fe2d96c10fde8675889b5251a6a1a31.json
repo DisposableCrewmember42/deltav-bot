@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM cr_forums WHERE channel_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "channel_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "private",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_cr_approved",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_cr_denied",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_pr_closed",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_pr_merged",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8c602502dfc13d1e19f43be04af902ca4fe2d96c10fde8675889b5251a6a1a31"
+}

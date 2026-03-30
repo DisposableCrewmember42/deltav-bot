@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE cr_discussions SET timer_end=?1 WHERE pr_id=?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "cdd2e0ccafba5a9e4902306e7d884cf9af1bc23bf87dbcaa89a3a8492b5df8d2"
+}

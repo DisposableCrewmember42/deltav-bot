@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM cr_forums WHERE channel_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "13a6efe22b05af47b9c45384e75ebd42781b0c9dc3fed007620a993b6207e84a"
+}

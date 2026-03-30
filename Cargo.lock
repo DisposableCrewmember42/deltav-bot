@@ -504,6 +504,7 @@ dependencies = [
  "jsonwebtoken",
  "octocrab",
  "poise",
+ "regex",
  "serde",
  "sqlx",
  "tokio",

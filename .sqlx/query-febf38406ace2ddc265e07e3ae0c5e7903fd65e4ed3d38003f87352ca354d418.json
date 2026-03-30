@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cr_discussions(pr_id, forum_id, thread_id, timer_end) VALUES(?1, ?2, ?3, ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "febf38406ace2ddc265e07e3ae0c5e7903fd65e4ed3d38003f87352ca354d418"
+}

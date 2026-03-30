@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM cr_discussions WHERE thread_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "pr_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "forum_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "thread_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "timer_end",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f93b62a762fa71657344507768837cea862626fa18543dd4a7f277cdff4f3543"
+}
