@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO cr_config (id, private_cr_forum)\n            VALUES(1, ?1)\n            ON CONFLICT(id)\n            DO UPDATE SET private_cr_forum=excluded.private_cr_forum;\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2f09621be9d4953085261b1453f74424ef7034f8ed4cd0dace9e4615dc894362"
+}

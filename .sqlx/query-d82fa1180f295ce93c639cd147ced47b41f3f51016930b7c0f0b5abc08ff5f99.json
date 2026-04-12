@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO cr_config (id, gh_label_no_review)\n            VALUES(1, ?1)\n            ON CONFLICT(id)\n            DO UPDATE SET gh_label_no_review=excluded.gh_label_no_review;\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d82fa1180f295ce93c639cd147ced47b41f3f51016930b7c0f0b5abc08ff5f99"
+}

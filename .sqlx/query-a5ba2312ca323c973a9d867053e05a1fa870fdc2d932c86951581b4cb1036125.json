@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT channel_id FROM cr_forums",
+  "query": "SELECT public_cr_forum FROM cr_config WHERE id = 1",
   "describe": {
     "columns": [
       {
-        "name": "channel_id",
+        "name": "public_cr_forum",
         "ordinal": 0,
         "type_info": "Integer"
       }
@@ -13,8 +13,8 @@
       "Right": 0
     },
     "nullable": [
-      false
+      true
     ]
   },
-  "hash": "8ebd8c434abc53a1e28fe5e70dc557f9d2f8b7b3c5be0de9f0ca31af38c2a5fe"
+  "hash": "a5ba2312ca323c973a9d867053e05a1fa870fdc2d932c86951581b4cb1036125"
 }

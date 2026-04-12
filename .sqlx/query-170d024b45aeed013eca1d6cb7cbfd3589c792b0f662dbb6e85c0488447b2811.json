@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT primary_cr_forum FROM direction_config WHERE id = 1",
+  "query": "SELECT private_cr_forum FROM cr_config WHERE id = 1",
   "describe": {
     "columns": [
       {
-        "name": "primary_cr_forum",
+        "name": "private_cr_forum",
         "ordinal": 0,
         "type_info": "Integer"
       }
@@ -16,5 +16,5 @@
       true
     ]
   },
-  "hash": "ae3f3c6191dcd6412569ee7efabea18d83a37608b0c2f408b083ffaaa4dc5dfa"
+  "hash": "170d024b45aeed013eca1d6cb7cbfd3589c792b0f662dbb6e85c0488447b2811"
 }

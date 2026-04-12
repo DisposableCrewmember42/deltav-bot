@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM cr_discussions WHERE pr_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a74826b70c78965aab00ef7c9bc20cff36d3cfa56d903d252bd36b6f8afe2f06"
+}
