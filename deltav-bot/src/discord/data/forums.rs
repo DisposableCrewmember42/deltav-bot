@@ -1,0 +1,107 @@
+use poise::serenity_prelude::{ChannelId, ForumTagId};
+use sqlx::{Pool, Sqlite};
+use tracing::{error, info, warn};
+
+use crate::discord::data::{config::Config, macros::id_to_int};
+
+#[derive(Debug, Copy, Clone)]
+pub struct ForumRecord {
+    pub channel_id: ChannelId,
+    pub private: bool,
+    pub tag_cr_approved: ForumTagId,
+    pub tag_cr_denied: ForumTagId,
+    pub tag_pr_merged: ForumTagId,
+    pub tag_pr_closed: ForumTagId,
+}
+
+impl ForumRecord {
+    pub async fn get_by_channel(db: &Pool<Sqlite>, forum: ChannelId) -> Option<ForumRecord> {
+        id_to_int!(forum);
+        match sqlx::query!("SELECT * FROM cr_forums WHERE channel_id = ?1", forum)
+            .fetch_one(db)
+            .await
+        {
+            Ok(r) => Some(ForumRecord {
+                channel_id: ChannelId::new(r.channel_id.cast_unsigned()),
+                private: r.private == 1,
+                tag_cr_approved: ForumTagId::new(r.tag_cr_approved.cast_unsigned()),
+                tag_cr_denied: ForumTagId::new(r.tag_cr_denied.cast_unsigned()),
+                tag_pr_closed: ForumTagId::new(r.tag_pr_closed.cast_unsigned()),
+                tag_pr_merged: ForumTagId::new(r.tag_pr_merged.cast_unsigned()),
+            }),
+            Err(e) => {
+                error!("Failed to get_forum {forum}: {e:#?}");
+                None
+            }
+        }
+    }
+
+    pub async fn upsert(&self, db: &Pool<Sqlite>) -> Result<(), ()> {
+        let private: i64 = if self.private { 1 } else { 0 };
+        let channel_id_s = self.channel_id.get().cast_signed();
+        let tag_approved_s = self.tag_cr_approved.get().cast_signed();
+        let tag_denied_s = self.tag_cr_denied.get().cast_signed();
+        let tag_closed_s = self.tag_pr_closed.get().cast_signed();
+        let tag_merged_s = self.tag_pr_merged.get().cast_signed();
+
+        info!(
+            "Trying to upsert direction forum: {}, Private {private}, Approve {}, Deny {}, Close {}, Merge {}",
+            self.channel_id,
+            self.tag_cr_approved,
+            self.tag_cr_denied,
+            self.tag_pr_closed,
+            self.tag_pr_merged
+        );
+        match sqlx::query!(
+        r#"
+        INSERT INTO cr_forums (channel_id, private, tag_cr_approved, tag_cr_denied, tag_pr_closed, tag_pr_merged)
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(channel_id)
+        DO UPDATE SET private=excluded.private, tag_cr_approved=excluded.tag_cr_approved, tag_cr_denied=excluded.tag_cr_denied,
+        tag_pr_closed=excluded.tag_pr_closed, tag_pr_merged=excluded.tag_pr_merged;
+        "#,
+        channel_id_s, private, tag_approved_s, tag_denied_s, tag_closed_s, tag_merged_s
+    )
+    .execute(db)
+    .await
+    {
+        Ok(_) => {
+            info!("Successfully upserted direction forum {}.", self.channel_id);
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Failed to upsert direction forum: {e:#?}");
+            return Err(());
+        }
+    };
+    }
+
+    pub async fn delete(&self, db: &Pool<Sqlite>) -> Result<(), ()> {
+        delete_forum_by_channel(db, self.channel_id).await
+    }
+}
+
+pub async fn delete_forum_by_channel(db: &Pool<Sqlite>, channel_id: ChannelId) -> Result<(), ()> {
+    if Config::get_intake_forum(&db).await == Some(channel_id) {
+        warn!("Main direction forum is being deleted.");
+        Config::set_intake_forum(&db, None).await.map_err(|_| ())?;
+    }
+
+    id_to_int!(channel_id);
+
+    match sqlx::query!("DELETE FROM cr_forums WHERE channel_id = ?1", channel_id)
+        .execute(db)
+        .await
+    {
+        Ok(r) => {
+            if r.rows_affected() != 0 {
+                info!("Deleted direction forum {}.", channel_id);
+            }
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Failed to delete direction forum {channel_id}: {e:#?}");
+            return Err(());
+        }
+    };
+}

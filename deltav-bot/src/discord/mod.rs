@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use poise::serenity_prelude::{self as serenity, Client, GatewayIntents};
+use poise::serenity_prelude::{self as serenity, GatewayIntents};
 use sqlx::{Pool, Sqlite};
 use tokio::{
     sync::{Mutex, mpsc::Receiver},
@@ -9,12 +9,16 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::{
-    discord::direction::{cr, cr_config, direction_component_task, direction_github_task},
+    discord::content_review::{
+        component_events::cr_component_task, cr, github_events::cr_github_task,
+    },
     github::{GitHub, GitHubMessage},
 };
 
-mod direction;
-mod storage;
+mod content_review;
+mod data;
+
+const EMBED_DESC_MAX_LEN: usize = 4096;
 
 struct Data {
     gh: Arc<GitHub>,
@@ -24,13 +28,6 @@ struct Data {
 }
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
-
-async fn bot_task(mut client: Client) {
-    info!("Starting client");
-    if let Err(e) = client.start().await {
-        error!("Discord client failed: {e:#?}");
-    }
-}
 
 pub async fn initialize(
     token: String,
@@ -60,7 +57,7 @@ pub async fn initialize(
         .build();
 
     let intents = GatewayIntents::GUILD_MESSAGES;
-    let client = match serenity::ClientBuilder::new(token, intents)
+    let mut client = match serenity::ClientBuilder::new(token, intents)
         .framework(framework)
         .await
     {
@@ -72,7 +69,12 @@ pub async fn initialize(
     };
 
     info!("Spawning Discord bot task.");
-    Ok(tokio::spawn(bot_task(client)))
+    Ok(tokio::spawn(async move {
+        info!("Starting client");
+        if let Err(e) = client.start().await {
+            error!("Discord client failed: {e:#?}");
+        }
+    }))
 }
 
 async fn event_handler(
@@ -88,14 +90,14 @@ async fn event_handler(
             let guild_ids: Vec<u64> = data_about_bot.guilds.iter().map(|x| x.id.get()).collect();
             info!("Present in {} guilds: {:?}", guild_ids.len(), guild_ids);
 
-            tokio::spawn(direction_github_task(
+            tokio::spawn(cr_github_task(
                 ctx.clone(),
                 data.gh_receiver.clone(),
                 data.db.clone(),
                 data.gh.clone(),
             ));
 
-            tokio::spawn(direction_component_task(
+            tokio::spawn(cr_component_task(
                 ctx.clone(),
                 data.db.clone(),
                 data.gh.clone(),

@@ -30,11 +30,14 @@ CREATE TABLE cr_outcomes (
 );
 
 CREATE TABLE cr_config (
-    id               INTEGER PRIMARY KEY CHECK (id = 1),
-    intake_cr_forum  INTEGER,
-    public_cr_forum  INTEGER,
-    private_cr_forum INTEGER,
-    gh_label_no_review TEXT,
+    id                    INTEGER PRIMARY KEY CHECK (id = 1),
+
+    intake_cr_forum       INTEGER,
+    public_cr_forum       INTEGER,
+    private_cr_forum      INTEGER,
+
+    gh_label_no_review    TEXT,
+    gh_label_under_review TEXT,
 
     FOREIGN KEY(intake_cr_forum) REFERENCES cr_forums(channel_id),
     FOREIGN KEY(public_cr_forum) REFERENCES cr_forums(channel_id),

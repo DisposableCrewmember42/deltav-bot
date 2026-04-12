@@ -1,0 +1,250 @@
+use poise::serenity_prelude::ChannelId;
+use sqlx::{Pool, Sqlite};
+use tracing::{error, info, warn};
+
+// TODO: This should hold a cache and be passed around
+pub struct Config {}
+
+impl Config {
+    pub async fn get_intake_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+        let row = match sqlx::query!("SELECT intake_cr_forum FROM cr_config WHERE id = 1")
+            .fetch_optional(db)
+            .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to fetch intake CR forum: {e:#?}");
+                return None;
+            }
+        };
+
+        row.intake_cr_forum
+            .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
+    }
+
+    pub async fn set_intake_forum(
+        db: &Pool<Sqlite>,
+        channel_id: Option<ChannelId>,
+    ) -> Result<(), String> {
+        let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
+        match sqlx::query!(
+            r#"
+            INSERT INTO cr_config (id, intake_cr_forum)
+            VALUES(1, ?1)
+            ON CONFLICT(id)
+            DO UPDATE SET intake_cr_forum=excluded.intake_cr_forum;
+            "#,
+            new_id
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("Intake CR forum set to {channel_id:?}.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set intake CR forum: {e:#?}");
+                return Err("Did you register it as a forum first?".into());
+            }
+        };
+    }
+
+    pub async fn get_public_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+        let row = match sqlx::query!("SELECT public_cr_forum FROM cr_config WHERE id = 1")
+            .fetch_optional(db)
+            .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to fetch public CR forum: {e:#?}");
+                return None;
+            }
+        };
+
+        row.public_cr_forum
+            .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
+    }
+
+    pub async fn set_public_forum(
+        db: &Pool<Sqlite>,
+        channel_id: Option<ChannelId>,
+    ) -> Result<(), String> {
+        let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
+        match sqlx::query!(
+            r#"
+            INSERT INTO cr_config (id, public_cr_forum)
+            VALUES(1, ?1)
+            ON CONFLICT(id)
+            DO UPDATE SET public_cr_forum=excluded.public_cr_forum;
+            "#,
+            new_id
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("Public CR forum set to {channel_id:?}.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set public CR forum: {e:#?}");
+                return Err("Did you register it as a forum first?".into());
+            }
+        };
+    }
+
+    pub async fn get_private_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+        let row = match sqlx::query!("SELECT private_cr_forum FROM cr_config WHERE id = 1")
+            .fetch_optional(db)
+            .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to fetch private CR forum: {e:#?}");
+                return None;
+            }
+        };
+
+        row.private_cr_forum
+            .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
+    }
+
+    pub async fn set_private_forum(
+        db: &Pool<Sqlite>,
+        channel_id: Option<ChannelId>,
+    ) -> Result<(), String> {
+        let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
+        match sqlx::query!(
+            r#"
+            INSERT INTO cr_config (id, private_cr_forum)
+            VALUES(1, ?1)
+            ON CONFLICT(id)
+            DO UPDATE SET private_cr_forum=excluded.private_cr_forum;
+            "#,
+            new_id
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("Private CR forum set to {channel_id:?}.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set private CR forum: {e:#?}");
+                return Err("Did you register it as a forum first?".into());
+            }
+        };
+    }
+
+    pub async fn set_no_review_needed_label(db: &Pool<Sqlite>, label: String) -> Result<(), ()> {
+        match sqlx::query!(
+            r#"
+            INSERT INTO cr_config (id, gh_label_no_review)
+            VALUES(1, ?1)
+            ON CONFLICT(id)
+            DO UPDATE SET gh_label_no_review=excluded.gh_label_no_review;
+            "#,
+            label
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("No review needed label set to '{label}'.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set no review needed label: {e:#?}");
+                return Err(());
+            }
+        };
+    }
+
+    pub async fn get_under_review_label(db: &Pool<Sqlite>) -> Option<String> {
+        let row = match sqlx::query!(
+            r#"
+            SELECT gh_label_under_review
+            FROM cr_config
+            WHERE ID = 1
+            "#,
+        )
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to fetch under review needed label: {e:#?}");
+                return None;
+            }
+        };
+
+        row.gh_label_under_review
+    }
+
+    pub async fn set_under_review_label(db: &Pool<Sqlite>, label: String) -> Result<(), ()> {
+        match sqlx::query!(
+            r#"
+            INSERT INTO cr_config (id, gh_label_no_review)
+            VALUES(1, ?1)
+            ON CONFLICT(id)
+            DO UPDATE SET gh_label_no_review=excluded.gh_label_no_review;
+            "#,
+            label
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("No review needed label set to '{label}'.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set no review needed label: {e:#?}");
+                return Err(());
+            }
+        };
+    }
+
+    pub async fn get_no_review_needed_label(db: &Pool<Sqlite>) -> Option<String> {
+        let row = match sqlx::query!(
+            r#"
+            SELECT gh_label_no_review
+            FROM cr_config
+            WHERE ID = 1
+            "#,
+        )
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to fetch no review needed label: {e:#?}");
+                return None;
+            }
+        };
+
+        row.gh_label_no_review
+    }
+}
