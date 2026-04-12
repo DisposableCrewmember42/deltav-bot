@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use poise::serenity_prelude::{
-    ChannelId, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedAuthor, CreateForumPost,
-    CreateMessage, EditThread, ForumTagId, GuildChannel, futures::TryFutureExt,
+    ChannelId, ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow,
+    CreateButton, CreateEmbed, CreateEmbedAuthor, CreateForumPost, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateMessage, EditInteractionResponse, EditThread,
+    ForumTagId, GuildChannel,
 };
 use sqlx::{Pool, Sqlite};
 use tokio::sync::{Mutex, mpsc::Receiver};
@@ -13,7 +15,8 @@ use crate::{
         Context, Error,
         storage::{
             DiscussionRecord, add_discussion, delete_forum, get_discussion_by_pr, get_forum,
-            get_main_forum, set_main_forum, upsert_forum,
+            get_intake_forum, get_no_review_needed_label, set_intake_forum,
+            set_no_review_needed_label, set_private_forum, set_public_forum, upsert_forum,
         },
     },
     github::{GitHub, GitHubMessage},
@@ -21,6 +24,11 @@ use crate::{
 
 const GH_COMMENT_PREFIX: &'static str = "!discord";
 const EMBED_DESC_MAX_LEN: usize = 4096;
+
+const BUTTON_ID_PREFIX: &'static str = "cr";
+const BUTTON_ID_ACTION_START_PUBLIC: &'static str = "reviewStartPublic";
+const BUTTON_ID_ACTION_START_PRIVATE: &'static str = "reviewStartPrivate";
+const BUTTON_ID_ACTION_NOT_NEEDED: &'static str = "reviewNotNeeded";
 
 pub async fn direction_github_task(
     ctx: poise::serenity_prelude::Context,
@@ -36,7 +44,7 @@ pub async fn direction_github_task(
                 pr_body,
                 opened_by,
             } => {
-                let Some(main_forum) = get_main_forum(&db).await else {
+                let Some(main_forum) = get_intake_forum(&db).await else {
                     warn!("Received PrOpened but main forum is not set.");
                     continue;
                 };
@@ -102,23 +110,37 @@ pub async fn direction_github_task(
                         &ctx,
                         CreateForumPost::new(
                             format!("{pr_title} #{pr_id}"),
-                            CreateMessage::new().add_embeds(vec![
-                                CreateEmbed::new()
-                                    .author(
-                                        CreateEmbedAuthor::new(format!(
-                                            "PR #{pr_id}, submitted by {opened_by}"
-                                        ))
-                                        .url(format!(
-                                            "https://github.com/{}/{}/pull/{pr_id}",
-                                            gh.repo_owner, gh.repo_name
-                                        )),
-                                    )
-                                    .title(pr_title)
-                                    .description(embed_description),
-                            ]), // .components(vec![CreateActionRow::Buttons(vec![
-                                //     CreateButton::new("todo-0").label("Start review"), // Open dialog to select amount of days for timer
-                                //     CreateButton::new("todo-1").label("No review needed"), // No review needed should just mark as approved and send a message into the thread, then close it
-                                // ])]),
+                            CreateMessage::new()
+                                .add_embeds(vec![
+                                    CreateEmbed::new()
+                                        .author(
+                                            CreateEmbedAuthor::new(format!(
+                                                "PR #{pr_id}, submitted by {opened_by}"
+                                            ))
+                                            .url(
+                                                format!(
+                                                    "https://github.com/{}/{}/pull/{pr_id}",
+                                                    gh.repo_owner, gh.repo_name
+                                                ),
+                                            ),
+                                        )
+                                        .title(&pr_title)
+                                        .description(&embed_description),
+                                ])
+                                .components(vec![CreateActionRow::Buttons(vec![
+                                    CreateButton::new(format!(
+                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_START_PUBLIC}_{pr_id}"
+                                    ))
+                                    .label("Public review"),
+                                    CreateButton::new(format!(
+                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_START_PRIVATE}_{pr_id}"
+                                    ))
+                                    .label("Private review"),
+                                    CreateButton::new(format!(
+                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_NOT_NEEDED}_{pr_id}"
+                                    ))
+                                    .label("No review needed"),
+                                ])]),
                         ),
                     )
                     .await
@@ -132,6 +154,9 @@ pub async fn direction_github_task(
                                 pr_id,
                                 thread_id: post_channel.id,
                                 timer_end: None,
+                                pr_title,
+                                pr_author: opened_by,
+                                pr_body: Some(embed_description),
                             },
                         )
                         .await
@@ -292,6 +317,156 @@ pub async fn direction_github_task(
     }
 }
 
+pub async fn direction_component_task(
+    ctx: poise::serenity_prelude::Context,
+    db: Pool<Sqlite>,
+    gh: Arc<GitHub>,
+) {
+    while let Some(interaction) = ComponentInteractionCollector::new(&ctx)
+        .filter(move |i| {
+            i.data
+                .custom_id
+                .starts_with(&format!("{BUTTON_ID_PREFIX}_"))
+        })
+        .await
+    {
+        match interaction.data.kind {
+            ComponentInteractionDataKind::Button => {
+                if let Err(e) = interaction.defer_ephemeral(&ctx).await {
+                    error!(
+                        "Failed to defer ephemeral on button press with id '{}': {e:#?}",
+                        interaction.data.custom_id
+                    );
+                }
+
+                let _ = interaction
+                    .create_response(&ctx, CreateInteractionResponse::Acknowledge)
+                    .await;
+
+                let error_response =
+                    EditInteractionResponse::new().content("An internal error occurred.");
+
+                // TODO: Check permissions
+
+                let id_parts: Vec<&str> = interaction.data.custom_id.split("_").collect();
+                if id_parts.len() != 3 {
+                    error!("Received invalid button press with ID {id_parts:?}.");
+                    let _ = interaction.edit_response(&ctx, error_response).await;
+
+                    continue;
+                }
+
+                let Ok(pr_id) = id_parts[2].parse::<u64>() else {
+                    error!(
+                        "Received invalid button press with pr_id='{}' ({id_parts:?}).",
+                        id_parts[2]
+                    );
+                    let _ = interaction.edit_response(&ctx, error_response).await;
+
+                    continue;
+                };
+
+                let Some(mut discussion) = get_discussion_by_pr(&db, pr_id).await else {
+                    error!("Received button press {id_parts:?}, but could not find discussion.");
+                    let _ = interaction.edit_response(&ctx, error_response).await;
+
+                    continue;
+                };
+
+                let Some(parent_forum) =
+                    discussion_channel_to_guild(pr_id, discussion.thread_id, &ctx)
+                        .await
+                        .and_then(|x| x.parent_id)
+                else {
+                    error!(
+                        "Failed to get parent forum for discussion thread {}",
+                        discussion.thread_id
+                    );
+                    continue;
+                };
+
+                let Some(intake_forum) = get_intake_forum(&db).await else {
+                    continue;
+                };
+
+                if parent_forum != intake_forum {
+                    error!(
+                        "Received button press {id_parts:?}, but parent forum was not intake forum."
+                    );
+                    let _ = interaction.edit_response(&ctx, error_response).await;
+
+                    continue;
+                }
+
+                let intake_thread = discussion.thread_id;
+
+                match id_parts[1] {
+                    BUTTON_ID_ACTION_START_PUBLIC => {}
+                    BUTTON_ID_ACTION_START_PRIVATE => {}
+                    BUTTON_ID_ACTION_NOT_NEEDED => {
+                        let Some(no_review_needed_label) = get_no_review_needed_label(&db).await
+                        else {
+                            error!("Can't process no review press without label.");
+                            let _ = interaction
+                                .edit_response(
+                                    &ctx,
+                                    EditInteractionResponse::new().content(
+                                        "Can't process No Review Needed with GitHub label unset.",
+                                    ),
+                                )
+                                .await;
+                            continue;
+                        };
+
+                        if let Err(()) = discussion.delete(&db).await {
+                            error!(
+                                "Failed to delete discussion from DB. Can't process no review needed press further."
+                            );
+                            continue;
+                        }
+
+                        if let Err(e) = gh
+                            .octo_install
+                            .issues(&gh.repo_owner, &gh.repo_name)
+                            .add_labels(discussion.pr_id, &vec![no_review_needed_label])
+                            .await
+                        {
+                            error!(
+                                "Failed to set no review needed label on PR #{}: {e:#?}",
+                                discussion.pr_id
+                            );
+                        }
+
+                        if let Err(e) = gh
+                            .octo_install
+                            .issues(&gh.repo_owner, &gh.repo_name)
+                            .create_comment(discussion.pr_id, format!("**Triaged by {}:** This PR does not require a content review discussion.", interaction.user.name))
+                            .await
+                        {
+                            error!(
+                                "Failed to create no review needed comment on PR #{}: {e:#?}",
+                                discussion.pr_id
+                            );
+                        }
+                    }
+                    action => {
+                        error!("Received button press with invalid action {}", action);
+                        let _ = interaction.edit_response(&ctx, error_response).await;
+                        continue;
+                    }
+                }
+
+                if let Err(e) = intake_thread.delete(&ctx).await {
+                    error!("Failed to delete intake discussion for pr {pr_id}: {e:#?}");
+                    let _ = interaction.edit_response(&ctx, error_response).await;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 async fn discussion_channel_to_guild(
     pr_id: u64,
     id: ChannelId,
@@ -300,7 +475,7 @@ async fn discussion_channel_to_guild(
     let guild_channel = match id.to_channel(ctx).await {
         Ok(x) => x,
         Err(e) => {
-            error!("Failed to fetch channel to retrieve tags: {e:#?}");
+            error!("Failed to fetch channel from id {id}: {e:#?}");
             return None;
         }
     };
@@ -313,17 +488,65 @@ async fn discussion_channel_to_guild(
     guild_channel
 }
 
-/// Set config values for the Direction module
-#[poise::command(slash_command)]
-pub async fn direction_config(
+#[poise::command(slash_command, subcommands("cr_forum", "cr_config", "cr_review"))]
+pub async fn cr(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+#[poise::command(slash_command, rename = "review")]
+pub async fn cr_review(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    subcommands("cr_forum_upsert", "cr_forum_delete"),
+    rename = "forum"
+)]
+pub async fn cr_forum(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Set config values for the Content Review module
+#[poise::command(slash_command, rename = "config")]
+pub async fn cr_config(
     ctx: Context<'_>,
-    public_review_forum: Option<ChannelId>,
+    intake_cr_forum: Option<ChannelId>,
+    public_cr_forum: Option<ChannelId>,
+    private_cr_forum: Option<ChannelId>,
+    gh_label_no_review: Option<String>,
+    gh_label_under_review: Option<String>,
 ) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
 
-    if let Some(public_review_forum) = public_review_forum {
-        if let Err(e) = set_main_forum(&ctx.data().db, Some(public_review_forum)).await {
-            ctx.reply(format!("Failed to set main forum: {e}")).await?;
+    if let Some(intake_cr_forum) = intake_cr_forum {
+        if let Err(e) = set_intake_forum(&ctx.data().db, Some(intake_cr_forum)).await {
+            ctx.reply(format!("Failed to set intake forum: {e}"))
+                .await?;
+            return Ok(());
+        }
+    }
+
+    if let Some(public_cr_forum) = public_cr_forum {
+        if let Err(e) = set_public_forum(&ctx.data().db, Some(public_cr_forum)).await {
+            ctx.reply(format!("Failed to set public forum: {e}"))
+                .await?;
+            return Ok(());
+        }
+    }
+
+    if let Some(private_cr_forum) = private_cr_forum {
+        if let Err(e) = set_private_forum(&ctx.data().db, Some(private_cr_forum)).await {
+            ctx.reply(format!("Failed to set private forum: {e}"))
+                .await?;
+            return Ok(());
+        }
+    }
+
+    if let Some(no_review_needed_label) = gh_label_no_review {
+        if let Err(()) = set_no_review_needed_label(&ctx.data().db, no_review_needed_label).await {
+            ctx.reply(format!("Failed to set no review needed label."))
+                .await?;
             return Ok(());
         }
     }
@@ -333,8 +556,8 @@ pub async fn direction_config(
 }
 
 /// Add or update a direction forum
-#[poise::command(slash_command)]
-pub async fn direction_forum_upsert(
+#[poise::command(slash_command, rename = "upsert")]
+pub async fn cr_forum_upsert(
     ctx: Context<'_>,
     forum: ChannelId,
     private: bool,
@@ -369,8 +592,8 @@ pub async fn direction_forum_upsert(
 }
 
 // Remove a direction forum (this does not delete the actual channel)
-#[poise::command(slash_command)]
-pub async fn direction_forum_delete(ctx: Context<'_>, forum: ChannelId) -> Result<(), Error> {
+#[poise::command(slash_command, rename = "delete")]
+pub async fn cr_forum_delete(ctx: Context<'_>, forum: ChannelId) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
 
     match delete_forum(&ctx.data().db, forum).await {

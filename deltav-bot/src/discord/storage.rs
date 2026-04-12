@@ -1,3 +1,10 @@
+//! Database helpers
+//!
+//! Error logging is done for you inside of this module.
+//! Functions in this module will return Options if they are expected to fail due to missing data.
+//! They return Result<(), ()> if they could fail unexpectedly, but the user does not need to / should not be informed about the specific cause.
+//! They return Result<(), String> if the error String should be presented to the user.
+
 use poise::serenity_prelude::{ChannelId, ForumTagId};
 use sqlx::{Pool, Sqlite};
 use tracing::{error, info, warn};
@@ -12,12 +19,16 @@ pub struct ForumRecord {
     pub tag_pr_closed: ForumTagId,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct DiscussionRecord {
     pub pr_id: u64,
     pub forum_id: ChannelId,
     pub thread_id: ChannelId,
     pub timer_end: Option<u64>,
+
+    pub pr_title: String,
+    pub pr_author: String,
+    pub pr_body: Option<String>,
 }
 
 macro_rules! id_to_int {
@@ -30,23 +41,110 @@ macro_rules! id_to_int {
     };
 }
 
-pub async fn get_main_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
-    let row = match sqlx::query!("SELECT primary_cr_forum FROM direction_config WHERE id = 1")
+impl DiscussionRecord {
+    pub async fn set_thread_id(
+        &mut self,
+        db: &Pool<Sqlite>,
+        new_thread: ChannelId,
+    ) -> Result<(), ()> {
+        let new_thread_s = new_thread.get().cast_signed();
+        let pr_id_s = self.pr_id.cast_signed();
+
+        if let Err(e) = sqlx::query!(
+            "UPDATE cr_discussions SET thread_id=?1 WHERE pr_id = ?2",
+            new_thread_s,
+            pr_id_s
+        )
+        .execute(db)
+        .await
+        {
+            error!(
+                "Failed to set new thread id {new_thread} for discussion of PR #{}: {e:#?}",
+                self.pr_id
+            );
+
+            return Err(());
+        }
+
+        self.thread_id = new_thread;
+
+        Ok(())
+    }
+
+    pub async fn delete(&self, db: &Pool<Sqlite>) -> Result<(), ()> {
+        let pr_id_s = self.pr_id.cast_signed();
+        if let Err(e) = sqlx::query!("DELETE FROM cr_discussions WHERE pr_id = ?1", pr_id_s)
+            .execute(db)
+            .await
+        {
+            error!(
+                "Failed to delete discussion record for pr #{}: {e}",
+                self.pr_id
+            );
+            return Err(());
+        }
+
+        Ok(())
+    }
+}
+
+pub async fn get_intake_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+    let row = match sqlx::query!("SELECT intake_cr_forum FROM cr_config WHERE id = 1")
         .fetch_optional(db)
         .await
     {
         Ok(Some(x)) => x,
         Ok(None) => {
-            warn!("Main direction forum is unset.");
+            warn!("Missing config row.");
             return None;
         }
         Err(e) => {
-            error!("Failed to fetch direction main forum: {e:#?}");
+            error!("Failed to fetch intake CR forum: {e:#?}");
             return None;
         }
     };
 
-    row.primary_cr_forum
+    row.intake_cr_forum
+        .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
+}
+
+pub async fn get_public_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+    let row = match sqlx::query!("SELECT public_cr_forum FROM cr_config WHERE id = 1")
+        .fetch_optional(db)
+        .await
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => {
+            warn!("Missing config row.");
+            return None;
+        }
+        Err(e) => {
+            error!("Failed to fetch public CR forum: {e:#?}");
+            return None;
+        }
+    };
+
+    row.public_cr_forum
+        .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
+}
+
+pub async fn get_private_forum(db: &Pool<Sqlite>) -> Option<ChannelId> {
+    let row = match sqlx::query!("SELECT private_cr_forum FROM cr_config WHERE id = 1")
+        .fetch_optional(db)
+        .await
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => {
+            warn!("Missing config row.");
+            return None;
+        }
+        Err(e) => {
+            error!("Failed to fetch private CR forum: {e:#?}");
+            return None;
+        }
+    };
+
+    row.private_cr_forum
         .and_then(|x| Some(ChannelId::new(x.cast_unsigned())))
 }
 
@@ -61,6 +159,9 @@ pub async fn get_discussion_by_pr(db: &Pool<Sqlite>, pr_id: u64) -> Option<Discu
             pr_id: r.pr_id.cast_unsigned(),
             thread_id: ChannelId::new(r.thread_id.cast_unsigned()),
             timer_end: r.timer_end.and_then(|x| Some(x.cast_unsigned())),
+            pr_title: r.pr_title,
+            pr_author: r.pr_author,
+            pr_body: r.pr_body,
         }),
         Err(e) => {
             warn!("Failed to get discussion by PR#{pr_id}: {e:#?}");
@@ -86,6 +187,9 @@ pub async fn get_discussion_by_thread(
             pr_id: r.pr_id.cast_unsigned(),
             thread_id: ChannelId::new(r.thread_id.cast_unsigned()),
             timer_end: r.timer_end.and_then(|x| Some(x.cast_unsigned())),
+            pr_title: r.pr_title,
+            pr_author: r.pr_author,
+            pr_body: r.pr_body,
         }),
         Err(e) => {
             warn!("Failed to get discussion by thread {thread_id}: {e:#?}");
@@ -101,11 +205,14 @@ pub async fn add_discussion(db: &Pool<Sqlite>, discussion: DiscussionRecord) -> 
     let timer_end = discussion.timer_end.and_then(|x| Some(x.cast_signed()));
 
     match sqlx::query!(
-        "INSERT INTO cr_discussions(pr_id, forum_id, thread_id, timer_end) VALUES(?1, ?2, ?3, ?4)",
+        "INSERT INTO cr_discussions(pr_id, forum_id, thread_id, timer_end, pr_title, pr_author, pr_body) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         pr_id,
         forum_id,
         thread_id,
-        timer_end
+        timer_end,
+        discussion.pr_title,
+        discussion.pr_author,
+        discussion.pr_body
     )
     .execute(db)
     .await
@@ -149,17 +256,17 @@ pub async fn set_discussion_timer(
     }
 }
 
-pub async fn set_main_forum(
+pub async fn set_intake_forum(
     db: &Pool<Sqlite>,
     channel_id: Option<ChannelId>,
 ) -> Result<(), String> {
     let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
     match sqlx::query!(
         r#"
-        INSERT INTO direction_config (id, primary_cr_forum)
+        INSERT INTO cr_config (id, intake_cr_forum)
         VALUES(1, ?1)
         ON CONFLICT(id)
-        DO UPDATE SET primary_cr_forum=excluded.primary_cr_forum;
+        DO UPDATE SET intake_cr_forum=excluded.intake_cr_forum;
         "#,
         new_id
     )
@@ -167,11 +274,67 @@ pub async fn set_main_forum(
     .await
     {
         Ok(_) => {
-            info!("Main direction forum set to {channel_id:?}.");
+            info!("Intake CR forum set to {channel_id:?}.");
             return Ok(());
         }
         Err(e) => {
-            error!("Failed to set direction main forum: {e:#?}");
+            error!("Failed to set intake CR forum: {e:#?}");
+            return Err("Did you register it as a forum first?".into());
+        }
+    };
+}
+
+pub async fn set_public_forum(
+    db: &Pool<Sqlite>,
+    channel_id: Option<ChannelId>,
+) -> Result<(), String> {
+    let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
+    match sqlx::query!(
+        r#"
+        INSERT INTO cr_config (id, public_cr_forum)
+        VALUES(1, ?1)
+        ON CONFLICT(id)
+        DO UPDATE SET public_cr_forum=excluded.public_cr_forum;
+        "#,
+        new_id
+    )
+    .execute(db)
+    .await
+    {
+        Ok(_) => {
+            info!("Public CR forum set to {channel_id:?}.");
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Failed to set public CR forum: {e:#?}");
+            return Err("Did you register it as a forum first?".into());
+        }
+    };
+}
+
+pub async fn set_private_forum(
+    db: &Pool<Sqlite>,
+    channel_id: Option<ChannelId>,
+) -> Result<(), String> {
+    let new_id = channel_id.and_then(|x| Some(x.get().cast_signed()));
+    match sqlx::query!(
+        r#"
+        INSERT INTO cr_config (id, private_cr_forum)
+        VALUES(1, ?1)
+        ON CONFLICT(id)
+        DO UPDATE SET private_cr_forum=excluded.private_cr_forum;
+        "#,
+        new_id
+    )
+    .execute(db)
+    .await
+    {
+        Ok(_) => {
+            info!("Private CR forum set to {channel_id:?}.");
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Failed to set private CR forum: {e:#?}");
             return Err("Did you register it as a forum first?".into());
         }
     };
@@ -260,9 +423,9 @@ pub async fn upsert_forum(
 }
 
 pub async fn delete_forum(db: &Pool<Sqlite>, channel_id: ChannelId) -> Result<(), ()> {
-    if get_main_forum(&db).await == Some(channel_id) {
+    if get_intake_forum(&db).await == Some(channel_id) {
         warn!("Main direction forum is being deleted.");
-        set_main_forum(&db, None).await.map_err(|_| ())?;
+        set_intake_forum(&db, None).await.map_err(|_| ())?;
     }
 
     id_to_int!(channel_id);
@@ -282,4 +445,53 @@ pub async fn delete_forum(db: &Pool<Sqlite>, channel_id: ChannelId) -> Result<()
             return Err(());
         }
     };
+}
+
+pub async fn set_no_review_needed_label(db: &Pool<Sqlite>, label: String) -> Result<(), ()> {
+    match sqlx::query!(
+        r#"
+        INSERT INTO cr_config (id, gh_label_no_review)
+        VALUES(1, ?1)
+        ON CONFLICT(id)
+        DO UPDATE SET gh_label_no_review=excluded.gh_label_no_review;
+        "#,
+        label
+    )
+    .execute(db)
+    .await
+    {
+        Ok(_) => {
+            info!("No review needed label set to '{label}'.");
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Failed to set no review needed label: {e:#?}");
+            return Err(());
+        }
+    };
+}
+
+pub async fn get_no_review_needed_label(db: &Pool<Sqlite>) -> Option<String> {
+    let row = match sqlx::query!(
+        r#"
+        SELECT gh_label_no_review
+        FROM cr_config
+        WHERE ID = 1
+        "#,
+    )
+    .fetch_optional(db)
+    .await
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => {
+            warn!("Missing config row.");
+            return None;
+        }
+        Err(e) => {
+            error!("Failed to fetch no review needed label: {e:#?}");
+            return None;
+        }
+    };
+
+    row.gh_label_no_review
 }

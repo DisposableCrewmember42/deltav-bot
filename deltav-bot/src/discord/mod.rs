@@ -9,9 +9,7 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::{
-    discord::direction::{
-        direction_config, direction_forum_delete, direction_forum_upsert, direction_github_task,
-    },
+    discord::direction::{cr, cr_config, direction_component_task, direction_github_task},
     github::{GitHub, GitHubMessage},
 };
 
@@ -26,13 +24,6 @@ struct Data {
 }
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
-
-/// Echos the provided text back at you
-#[poise::command(slash_command, prefix_command)]
-async fn echo(ctx: Context<'_>, #[description = "What to echo"] text: String) -> Result<(), Error> {
-    ctx.say(text).await?;
-    Ok(())
-}
 
 async fn bot_task(mut client: Client) {
     info!("Starting client");
@@ -50,12 +41,7 @@ pub async fn initialize(
     info!("Initializing framework.");
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![
-                echo(),
-                direction_config(),
-                direction_forum_upsert(),
-                direction_forum_delete(),
-            ],
+            commands: vec![cr()],
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
             },
@@ -105,6 +91,12 @@ async fn event_handler(
             tokio::spawn(direction_github_task(
                 ctx.clone(),
                 data.gh_receiver.clone(),
+                data.db.clone(),
+                data.gh.clone(),
+            ));
+
+            tokio::spawn(direction_component_task(
+                ctx.clone(),
                 data.db.clone(),
                 data.gh.clone(),
             ));

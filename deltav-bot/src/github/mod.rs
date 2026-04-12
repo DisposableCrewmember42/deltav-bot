@@ -21,7 +21,7 @@ use octocrab::{
 use regex::Regex;
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 pub struct GhAppConfig {
     pub id: AppId,
