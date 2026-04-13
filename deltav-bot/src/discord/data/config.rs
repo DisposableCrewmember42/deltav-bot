@@ -1,4 +1,4 @@
-use poise::serenity_prelude::ChannelId;
+use poise::serenity_prelude::{ChannelId, RoleId};
 use sqlx::{Pool, Sqlite};
 use tracing::{error, info, warn};
 
@@ -246,5 +246,53 @@ impl Config {
         };
 
         row.gh_label_no_review
+    }
+
+    pub async fn get_review_ping_role(db: &Pool<Sqlite>) -> Option<RoleId> {
+        let row = match sqlx::query!("SELECT review_ping_role FROM cr_config WHERE id = 1")
+            .fetch_optional(db)
+            .await
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => {
+                warn!("Missing config row.");
+                return None;
+            }
+            Err(e) => {
+                error!("Failed to review ping role: {e:#?}");
+                return None;
+            }
+        };
+
+        row.review_ping_role
+            .and_then(|x| Some(RoleId::new(x.cast_unsigned())))
+    }
+
+    pub async fn set_review_ping_role(
+        db: &Pool<Sqlite>,
+        role_id: Option<RoleId>,
+    ) -> Result<(), ()> {
+        let new_id = role_id.and_then(|x| Some(x.get().cast_signed()));
+        match sqlx::query!(
+            r#"
+                INSERT INTO cr_config (id, review_ping_role)
+                VALUES(1, ?1)
+                ON CONFLICT(id)
+                DO UPDATE SET review_ping_role=excluded.review_ping_role;
+                "#,
+            new_id
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                info!("Review ping role set to {role_id:?}.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to set review ping role: {e:#?}");
+                return Err(());
+            }
+        };
     }
 }

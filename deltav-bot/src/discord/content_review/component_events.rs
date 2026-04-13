@@ -1,9 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
+use chrono::{Days, Utc};
 use poise::{
     Modal, execute_modal_on_component_interaction,
     serenity_prelude::{
-        ComponentInteractionCollector, ComponentInteractionDataKind, CreateForumPost,
+        ChannelId, ComponentInteraction, ComponentInteractionCollector,
+        ComponentInteractionDataKind, CreateAllowedMentions, CreateForumPost,
         CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
         EditInteractionResponse,
     },
@@ -54,6 +56,166 @@ impl<'a> AsRef<poise::serenity_prelude::Context> for CtxWrapper<'a> {
     }
 }
 
+pub async fn start_review_task(
+    interaction: ComponentInteraction,
+    ctx: poise::serenity_prelude::Context,
+    mut discussion: DiscussionRecord,
+    db: Pool<Sqlite>,
+    gh: Arc<GitHub>,
+    intake_thread: ChannelId,
+    forum_channel: ChannelId,
+    private: bool,
+) {
+    let error_response = EditInteractionResponse::new().content("An internal error occurred.");
+
+    let Some(under_review_label) = Config::get_under_review_label(&db).await else {
+        error!("Can't process public review press without under review github label.");
+        let _ = interaction.create_response(
+            &ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Can't process public start with under review label unset."),
+            ),
+        );
+        return;
+    };
+
+    let Ok(Some(review_settings)) = execute_modal_on_component_interaction::<StartReviewModal>(
+        CtxWrapper::new(&ctx),
+        interaction.clone(),
+        None,
+        Some(Duration::from_mins(60)),
+    )
+    .await
+    else {
+        let _ = interaction
+            .edit_response(
+                &ctx,
+                EditInteractionResponse::new()
+                    .content("Modal timed out or an internal error occurred."),
+            )
+            .await;
+        return;
+    };
+
+    let Ok(review_time_days) = review_settings.review_time_days.parse::<u64>() else {
+        let _ = interaction.edit_response(&ctx, EditInteractionResponse::new().content("Invalid review time provided. Input must only be composed of numeric characters and cannot be a decimal or negative.")).await;
+        return;
+    };
+
+    if review_time_days > 90 {
+        let _ = interaction
+            .edit_response(
+                &ctx,
+                EditInteractionResponse::new()
+                    .content("Invalid review time provided. It can't be longer than 90 days."),
+            )
+            .await;
+        return;
+    }
+
+    let Some(due_at) = Utc::now().checked_add_days(Days::new(review_time_days)) else {
+        return;
+    };
+
+    if let Err(e) = gh
+        .octo_install
+        .issues(&gh.repo_owner, &gh.repo_name)
+        .add_labels(discussion.pr_id, &vec![under_review_label])
+        .await
+    {
+        error!(
+            "Failed to set under review label for PR #{}: {e:#?}",
+            discussion.pr_id
+        );
+        return;
+    }
+
+    if let Err(e) = gh
+        .octo_install
+        .issues(&gh.repo_owner, &gh.repo_name)
+        .create_comment(discussion.pr_id, format!(
+            "**Triaged by {}:**\nThis PR requires a content review discussion, which will be held in {}.\n{}{}",
+            interaction.user.name,
+            if private { "private" } else { "public" },
+            if let Some(reasoning) = review_settings.reasoning {
+                format!("```\n{reasoning}\n```\n")
+            } else
+            {
+                String::new()
+            },
+            format!("The review duration has been set to {review_time_days} days.")
+        ))
+        .await
+    {
+        error!(
+            "Failed to set under review label for PR #{}: {e:#?}",
+            discussion.pr_id
+        );
+        return;
+    }
+
+    let mut message = CreateMessage::new().add_embeds(vec![
+        create_pr_embed(
+            discussion.pr_id,
+            discussion.pr_title.clone(),
+            discussion.pr_author.clone(),
+            discussion.pr_body.clone(),
+            &gh,
+        )
+        .field(
+            "Review duration",
+            format!("{} days", review_time_days),
+            true,
+        )
+        .field("Due", format!("<t:{}:R>", due_at.timestamp()), true),
+    ]);
+
+    if let Some(ping_role) = Config::get_review_ping_role(&db).await {
+        message = message
+            .allowed_mentions(CreateAllowedMentions::new().roles(vec![ping_role]))
+            .content(format!("<@&{}>", ping_role.get()));
+    }
+
+    let new_thread = match forum_channel
+        .create_forum_post(
+            &ctx,
+            CreateForumPost::new(
+                format!("{} #{}", discussion.pr_title, discussion.pr_id),
+                message,
+            ),
+        )
+        .await
+    {
+        Ok(x) => x,
+        Err(e) => {
+            error!(
+                "Failed to create forum post to start review of PR #{}: {e:#?}",
+                discussion.pr_id
+            );
+            let _ = interaction.edit_response(&ctx, error_response).await;
+            return;
+        }
+    };
+    if let Err(()) = discussion.set_thread_id(&db, new_thread.id).await {
+        let _ = interaction.edit_response(&ctx, error_response).await;
+        return;
+    }
+
+    if let Err(()) = discussion.setup_review_time(&db, review_time_days).await {
+        let _ = interaction.edit_response(&ctx, error_response).await;
+        return;
+    }
+
+    if let Err(e) = intake_thread.delete(&ctx).await {
+        error!(
+            "Failed to delete intake discussion for pr {}: {e:#?}",
+            discussion.pr_id
+        );
+        let _ = interaction.edit_response(&ctx, error_response).await;
+    }
+}
+
 pub async fn cr_component_task(
     ctx: poise::serenity_prelude::Context,
     db: Pool<Sqlite>,
@@ -67,19 +229,11 @@ pub async fn cr_component_task(
         })
         .await
     {
+        // TODO: Check permissions
         match interaction.data.kind {
             ComponentInteractionDataKind::Button => {
-                // if let Err(e) = interaction.defer_ephemeral(&ctx).await {
-                //     error!(
-                //         "Failed to defer ephemeral on button press with id '{}': {e:#?}",
-                //         interaction.data.custom_id
-                //     );
-                // }
-
                 let error_response =
                     EditInteractionResponse::new().content("An internal error occurred.");
-
-                // TODO: Check permissions
 
                 let id_parts: Vec<&str> = interaction.data.custom_id.split("_").collect();
                 if id_parts.len() != 3 {
@@ -99,7 +253,7 @@ pub async fn cr_component_task(
                     continue;
                 };
 
-                let Some(mut discussion) = DiscussionRecord::get_by_pr(&db, pr_id).await else {
+                let Some(discussion) = DiscussionRecord::get_by_pr(&db, pr_id).await else {
                     error!("Received button press {id_parts:?}, but could not find discussion.");
                     let _ = interaction.edit_response(&ctx, error_response).await;
 
@@ -148,134 +302,44 @@ pub async fn cr_component_task(
                             continue;
                         };
 
-                        let Some(under_review_label) = Config::get_under_review_label(&db).await
-                        else {
-                            error!(
-                                "Can't process public review press without under review github label."
-                            );
+                        tokio::spawn(start_review_task(
+                            interaction,
+                            ctx.clone(),
+                            discussion,
+                            db.clone(),
+                            gh.clone(),
+                            intake_thread,
+                            public_forum,
+                            false,
+                        ));
+                    }
+
+                    BUTTON_ID_ACTION_START_PRIVATE => {
+                        let Some(private_forum) = Config::get_private_forum(&db).await else {
+                            error!("Can't process private review press without private forum.");
                             let _ = interaction.create_response(
                                 &ctx,
                                 CreateInteractionResponse::Message(
                                     CreateInteractionResponseMessage::new().content(
-                                        "Can't process public start with under review label unset.",
+                                        "Can't process private start with private forum unset.",
                                     ),
                                 ),
                             );
                             continue;
                         };
 
-                        let interaction = interaction.clone();
-                        let ctx = ctx.clone();
-                        let db = db.clone();
-                        let gh = gh.clone();
-                        tokio::spawn(async move {
-                            let Ok(Some(review_settings)) =
-                                execute_modal_on_component_interaction::<StartReviewModal>(
-                                    CtxWrapper::new(&ctx),
-                                    interaction.clone(),
-                                    None,
-                                    Some(Duration::from_mins(60)),
-                                )
-                                .await
-                            else {
-                                let _ = interaction
-                                    .edit_response(
-                                        &ctx,
-                                        EditInteractionResponse::new().content(
-                                            "Modal timed out or an internal error occurred.",
-                                        ),
-                                    )
-                                    .await;
-                                return;
-                            };
-
-                            let Ok(review_time_days) =
-                                review_settings.review_time_days.parse::<u64>()
-                            else {
-                                let _ = interaction.edit_response(&ctx, EditInteractionResponse::new().content("Invalid review time provided. Input must only be composed of numeric characters and cannot be a decimal or negative.")).await;
-                                return;
-                            };
-
-                            if let Err(e) = gh
-                                .octo_install
-                                .issues(&gh.repo_owner, &gh.repo_name)
-                                .add_labels(discussion.pr_id, &vec![under_review_label])
-                                .await
-                            {
-                                error!(
-                                    "Failed to set under review label for PR #{}: {e:#?}",
-                                    discussion.pr_id
-                                );
-                                return;
-                            }
-
-                            if let Err(e) = gh
-                                .octo_install
-                                .issues(&gh.repo_owner, &gh.repo_name)
-                                .create_comment(discussion.pr_id, format!(
-                                    "**Triaged by {}:** This PR requires a content review discussion, which will be held in public.{}",
-                                    interaction.user.name,
-                                    if let Some(reasoning) = review_settings.reasoning {
-                                        format!("\n```{reasoning}```")
-                                    } else
-                                    {
-                                        String::new()
-                                    }
-                                ))
-                                .await
-                            {
-                                error!(
-                                    "Failed to set under review label for PR #{}: {e:#?}",
-                                    discussion.pr_id
-                                );
-                                return;
-                            }
-
-                            let new_thread = match public_forum
-                                .create_forum_post(
-                                    &ctx,
-                                    CreateForumPost::new(
-                                        format!("{} #{}", discussion.pr_title, discussion.pr_id),
-                                        CreateMessage::new().add_embed(create_pr_embed(
-                                            discussion.pr_id,
-                                            discussion.pr_title.clone(),
-                                            discussion.pr_author.clone(),
-                                            discussion.pr_body.clone(),
-                                            &gh,
-                                        )),
-                                    ),
-                                )
-                                .await
-                            {
-                                Ok(x) => x,
-                                Err(e) => {
-                                    error!(
-                                        "Failed to create forum post to start review of PR #{}: {e:#?}",
-                                        discussion.pr_id
-                                    );
-                                    let _ = interaction.edit_response(&ctx, error_response).await;
-                                    return;
-                                }
-                            };
-                            if let Err(()) = discussion.set_thread_id(&db, new_thread.id).await {
-                                let _ = interaction.edit_response(&ctx, error_response).await;
-                                return;
-                            }
-
-                            if let Err(()) =
-                                discussion.setup_review_time(&db, review_time_days).await
-                            {
-                                let _ = interaction.edit_response(&ctx, error_response).await;
-                                return;
-                            }
-
-                            if let Err(e) = intake_thread.delete(&ctx).await {
-                                error!("Failed to delete intake discussion for pr {pr_id}: {e:#?}");
-                                let _ = interaction.edit_response(&ctx, error_response).await;
-                            }
-                        });
+                        tokio::spawn(start_review_task(
+                            interaction,
+                            ctx.clone(),
+                            discussion,
+                            db.clone(),
+                            gh.clone(),
+                            intake_thread,
+                            private_forum,
+                            true,
+                        ));
                     }
-                    BUTTON_ID_ACTION_START_PRIVATE => {}
+
                     BUTTON_ID_ACTION_NOT_NEEDED => {
                         let _ = interaction
                             .create_response(&ctx, CreateInteractionResponse::Acknowledge)

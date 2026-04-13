@@ -1,5 +1,5 @@
 use poise::serenity_prelude::{
-    ChannelId, CreateEmbed, CreateEmbedAuthor, ForumTagId, GuildChannel,
+    ChannelId, CreateEmbed, CreateEmbedFooter, ForumTagId, GuildChannel, RoleId,
 };
 use tracing::error;
 
@@ -74,6 +74,7 @@ pub async fn cr_config(
     private_cr_forum: Option<ChannelId>,
     gh_label_no_review: Option<String>,
     gh_label_under_review: Option<String>,
+    review_ping_role: Option<RoleId>,
 ) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
 
@@ -117,6 +118,17 @@ pub async fn cr_config(
         if let Err(()) = Config::set_under_review_label(&ctx.data().db, under_review_label).await {
             ctx.reply(format!(
                 "Failed to set under review label due to an internal error."
+            ))
+            .await?;
+            return Ok(());
+        }
+    }
+
+    if let Some(review_ping_role) = review_ping_role {
+        if let Err(()) = Config::set_review_ping_role(&ctx.data().db, Some(review_ping_role)).await
+        {
+            ctx.reply(format!(
+                "Failed to set review ping role due to an internal error."
             ))
             .await?;
             return Ok(());
@@ -197,12 +209,13 @@ pub fn create_pr_embed(
         .collect();
 
     CreateEmbed::new()
-        .author(
-            CreateEmbedAuthor::new(format!("PR #{pr_id}, submitted by {pr_author}")).url(format!(
-                "https://github.com/{}/{}/pull/{pr_id}",
-                gh.repo_owner, gh.repo_name
-            )),
-        )
+        .footer(CreateEmbedFooter::new(format!(
+            "PR #{pr_id}, submitted by {pr_author}"
+        )))
+        .url(format!(
+            "https://github.com/{}/{}/pull/{pr_id}",
+            gh.repo_owner, gh.repo_name
+        ))
         .title(&pr_title)
         .description(&embed_description)
 }

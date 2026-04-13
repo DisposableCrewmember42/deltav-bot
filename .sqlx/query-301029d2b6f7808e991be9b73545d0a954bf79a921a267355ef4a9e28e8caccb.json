@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT INTO cr_config (id, review_ping_role)\n                VALUES(1, ?1)\n                ON CONFLICT(id)\n                DO UPDATE SET review_ping_role=excluded.review_ping_role;\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "301029d2b6f7808e991be9b73545d0a954bf79a921a267355ef4a9e28e8caccb"
+}
