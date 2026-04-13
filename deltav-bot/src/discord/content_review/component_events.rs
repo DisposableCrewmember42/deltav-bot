@@ -216,6 +216,8 @@ pub async fn start_review_task(
     }
 }
 
+// TODO: This should do as little work as possible to verify permissions and basic validity before
+//       spawning a task to handle the interaction so other interactions aren't held up
 pub async fn cr_component_task(
     ctx: poise::serenity_prelude::Context,
     db: Pool<Sqlite>,
