@@ -1,18 +1,23 @@
-use poise::serenity_prelude::{ChannelId, ForumTagId, GuildChannel};
+use poise::serenity_prelude::{
+    ChannelId, CreateEmbed, CreateEmbedAuthor, ForumTagId, GuildChannel,
+};
 use tracing::error;
 
-use crate::discord::{
-    Context, Error,
-    data::{
-        config::Config,
-        forums::{ForumRecord, delete_forum_by_channel},
+use crate::{
+    discord::{
+        Context, EMBED_DESC_MAX_LEN, Error,
+        data::{
+            config::Config,
+            forums::{ForumRecord, delete_forum_by_channel},
+        },
     },
+    github::GitHub,
 };
 
 pub mod component_events;
 pub mod github_events;
 
-pub const BUTTON_ID_PREFIX: &'static str = "cr";
+pub const INTERACTION_ID_PREFIX: &'static str = "cr";
 pub const BUTTON_ID_ACTION_START_PUBLIC: &'static str = "reviewStartPublic";
 pub const BUTTON_ID_ACTION_START_PRIVATE: &'static str = "reviewStartPrivate";
 pub const BUTTON_ID_ACTION_NOT_NEEDED: &'static str = "reviewNotNeeded";
@@ -130,6 +135,7 @@ pub async fn cr_forum_upsert(
     private: bool,
     tag_approved: ForumTagId,
     tag_denied: ForumTagId,
+    tag_test_merge: ForumTagId,
     tag_closed: ForumTagId,
     tag_merged: ForumTagId,
 ) -> Result<(), Error> {
@@ -140,6 +146,7 @@ pub async fn cr_forum_upsert(
         private,
         tag_cr_approved: tag_approved,
         tag_cr_denied: tag_denied,
+        tag_cr_test_merge: tag_test_merge,
         tag_pr_closed: tag_closed,
         tag_pr_merged: tag_merged,
     };
@@ -173,4 +180,29 @@ pub async fn cr_forum_delete(ctx: Context<'_>, forum: ChannelId) -> Result<(), E
     }
 
     Ok(())
+}
+
+pub fn create_pr_embed(
+    pr_id: u64,
+    pr_title: String,
+    pr_author: String,
+    pr_body: Option<String>,
+    gh: &GitHub,
+) -> CreateEmbed {
+    // String::truncate might panic, so doing it like this.
+    let embed_description: String = pr_body
+        .unwrap_or("No description.".into())
+        .chars()
+        .take(EMBED_DESC_MAX_LEN)
+        .collect();
+
+    CreateEmbed::new()
+        .author(
+            CreateEmbedAuthor::new(format!("PR #{pr_id}, submitted by {pr_author}")).url(format!(
+                "https://github.com/{}/{}/pull/{pr_id}",
+                gh.repo_owner, gh.repo_name
+            )),
+        )
+        .title(&pr_title)
+        .description(&embed_description)
 }

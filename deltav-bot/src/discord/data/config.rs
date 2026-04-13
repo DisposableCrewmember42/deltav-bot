@@ -202,10 +202,10 @@ impl Config {
     pub async fn set_under_review_label(db: &Pool<Sqlite>, label: String) -> Result<(), ()> {
         match sqlx::query!(
             r#"
-            INSERT INTO cr_config (id, gh_label_no_review)
+            INSERT INTO cr_config (id, gh_label_under_review)
             VALUES(1, ?1)
             ON CONFLICT(id)
-            DO UPDATE SET gh_label_no_review=excluded.gh_label_no_review;
+            DO UPDATE SET gh_label_under_review=excluded.gh_label_under_review;
             "#,
             label
         )
@@ -213,11 +213,11 @@ impl Config {
         .await
         {
             Ok(_) => {
-                info!("No review needed label set to '{label}'.");
+                info!("Under review label set to '{label}'.");
                 return Ok(());
             }
             Err(e) => {
-                error!("Failed to set no review needed label: {e:#?}");
+                error!("Failed to set under review label: {e:#?}");
                 return Err(());
             }
         };

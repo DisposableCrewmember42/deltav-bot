@@ -1,13 +1,17 @@
+use chrono::{DateTime, Days, Utc};
 use poise::serenity_prelude::ChannelId;
 use sqlx::{Pool, Sqlite};
 use tracing::{error, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct DiscussionRecord {
     pub pr_id: u64,
     pub forum_id: ChannelId,
     pub thread_id: ChannelId,
-    pub timer_end: Option<u64>,
+
+    pub review_days_total: Option<u64>,
+    pub review_days_passed: Option<u64>,
+    pub review_days_next_micros: Option<chrono::DateTime<Utc>>,
 
     pub pr_title: String,
     pub pr_author: String,
@@ -70,10 +74,15 @@ impl DiscussionRecord {
                 forum_id: ChannelId::new(r.forum_id.cast_unsigned()),
                 pr_id: r.pr_id.cast_unsigned(),
                 thread_id: ChannelId::new(r.thread_id.cast_unsigned()),
-                timer_end: r.timer_end.and_then(|x| Some(x.cast_unsigned())),
+                review_days_total: r.review_days_total.and_then(|x| Some(x.cast_unsigned())),
+                review_days_passed: r.review_days_passed.and_then(|x| Some(x.cast_unsigned())),
+                review_days_next_micros: r
+                    .review_days_passed
+                    .and_then(|x| DateTime::from_timestamp_micros(x)),
                 pr_title: r.pr_title,
                 pr_author: r.pr_author,
                 pr_body: r.pr_body,
+                ..Default::default()
             }),
             Err(e) => {
                 warn!("Failed to get discussion by PR#{pr_id}: {e:#?}");
@@ -98,7 +107,11 @@ impl DiscussionRecord {
                 forum_id: ChannelId::new(r.forum_id.cast_unsigned()),
                 pr_id: r.pr_id.cast_unsigned(),
                 thread_id: ChannelId::new(r.thread_id.cast_unsigned()),
-                timer_end: r.timer_end.and_then(|x| Some(x.cast_unsigned())),
+                review_days_total: r.review_days_total.and_then(|x| Some(x.cast_unsigned())),
+                review_days_passed: r.review_days_passed.and_then(|x| Some(x.cast_unsigned())),
+                review_days_next_micros: r
+                    .review_days_passed
+                    .and_then(|x| DateTime::from_timestamp_micros(x)),
                 pr_title: r.pr_title,
                 pr_author: r.pr_author,
                 pr_body: r.pr_body,
@@ -114,14 +127,20 @@ impl DiscussionRecord {
         let pr_id = self.pr_id.cast_signed();
         let forum_id = self.forum_id.get().cast_signed();
         let thread_id = self.thread_id.get().cast_signed();
-        let timer_end = self.timer_end.and_then(|x| Some(x.cast_signed()));
+        let review_days_total = self.review_days_total.and_then(|x| Some(x.cast_signed()));
+        let review_days_passed = self.review_days_passed.and_then(|x| Some(x.cast_signed()));
+        let review_days_next_micros = self
+            .review_days_next_micros
+            .and_then(|x| Some(x.timestamp_micros()));
 
         match sqlx::query!(
-            "INSERT INTO cr_discussions(pr_id, forum_id, thread_id, timer_end, pr_title, pr_author, pr_body) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO cr_discussions(pr_id, forum_id, thread_id, review_days_total, review_days_passed, review_days_next_micros, pr_title, pr_author, pr_body) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             pr_id,
             forum_id,
             thread_id,
-            timer_end,
+            review_days_total,
+            review_days_passed,
+            review_days_next_micros,
             self.pr_title,
             self.pr_author,
             self.pr_body
@@ -132,6 +151,39 @@ impl DiscussionRecord {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("Failed to insert CR discussion {self:?}: {e:#?}");
+                Err(())
+            }
+        }
+    }
+
+    pub async fn setup_review_time(&mut self, db: &Pool<Sqlite>, days: u64) -> Result<(), ()> {
+        let review_days_total_s = Some(days.cast_signed());
+        let review_days_passed_s = Some(0i64);
+        let next_day = Utc::now().checked_add_days(Days::new(1));
+        let review_days_next_micros = next_day.and_then(|x| Some(x.timestamp_micros()));
+        let pr_id_s = self.pr_id.cast_signed();
+
+        match sqlx::query!(
+            r#"UPDATE cr_discussions
+            SET review_days_total=?1, review_days_passed=?2, review_days_next_micros=?3
+            WHERE pr_id = ?4
+            "#,
+            review_days_total_s,
+            review_days_passed_s,
+            review_days_next_micros,
+            pr_id_s
+        )
+        .execute(db)
+        .await
+        {
+            Ok(_) => {
+                self.review_days_total = Some(days);
+                self.review_days_passed = Some(0u64);
+                self.review_days_next_micros = next_day;
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to set up CR discussion review time {self:?}: {e:#?}");
                 Err(())
             }
         }

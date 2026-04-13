@@ -10,6 +10,7 @@ pub struct ForumRecord {
     pub private: bool,
     pub tag_cr_approved: ForumTagId,
     pub tag_cr_denied: ForumTagId,
+    pub tag_cr_test_merge: ForumTagId,
     pub tag_pr_merged: ForumTagId,
     pub tag_pr_closed: ForumTagId,
 }
@@ -26,6 +27,7 @@ impl ForumRecord {
                 private: r.private == 1,
                 tag_cr_approved: ForumTagId::new(r.tag_cr_approved.cast_unsigned()),
                 tag_cr_denied: ForumTagId::new(r.tag_cr_denied.cast_unsigned()),
+                tag_cr_test_merge: ForumTagId::new(r.tag_cr_test_merge.cast_unsigned()),
                 tag_pr_closed: ForumTagId::new(r.tag_pr_closed.cast_unsigned()),
                 tag_pr_merged: ForumTagId::new(r.tag_pr_merged.cast_unsigned()),
             }),
@@ -41,26 +43,20 @@ impl ForumRecord {
         let channel_id_s = self.channel_id.get().cast_signed();
         let tag_approved_s = self.tag_cr_approved.get().cast_signed();
         let tag_denied_s = self.tag_cr_denied.get().cast_signed();
+        let tag_test_merge_s = self.tag_cr_test_merge.get().cast_signed();
         let tag_closed_s = self.tag_pr_closed.get().cast_signed();
         let tag_merged_s = self.tag_pr_merged.get().cast_signed();
 
-        info!(
-            "Trying to upsert direction forum: {}, Private {private}, Approve {}, Deny {}, Close {}, Merge {}",
-            self.channel_id,
-            self.tag_cr_approved,
-            self.tag_cr_denied,
-            self.tag_pr_closed,
-            self.tag_pr_merged
-        );
+        info!("Trying to upsert direction forum: {self:?}",);
         match sqlx::query!(
         r#"
-        INSERT INTO cr_forums (channel_id, private, tag_cr_approved, tag_cr_denied, tag_pr_closed, tag_pr_merged)
-        VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO cr_forums (channel_id, private, tag_cr_approved, tag_cr_denied, tag_cr_test_merge, tag_pr_closed, tag_pr_merged)
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(channel_id)
         DO UPDATE SET private=excluded.private, tag_cr_approved=excluded.tag_cr_approved, tag_cr_denied=excluded.tag_cr_denied,
-        tag_pr_closed=excluded.tag_pr_closed, tag_pr_merged=excluded.tag_pr_merged;
+        tag_cr_test_merge=excluded.tag_cr_test_merge, tag_pr_closed=excluded.tag_pr_closed, tag_pr_merged=excluded.tag_pr_merged;
         "#,
-        channel_id_s, private, tag_approved_s, tag_denied_s, tag_closed_s, tag_merged_s
+        channel_id_s, private, tag_approved_s, tag_denied_s, tag_test_merge_s, tag_closed_s, tag_merged_s
     )
     .execute(db)
     .await

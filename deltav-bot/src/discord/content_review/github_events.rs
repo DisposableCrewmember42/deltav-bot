@@ -13,7 +13,8 @@ use crate::{
         EMBED_DESC_MAX_LEN,
         content_review::{
             BUTTON_ID_ACTION_NOT_NEEDED, BUTTON_ID_ACTION_START_PRIVATE,
-            BUTTON_ID_ACTION_START_PUBLIC, BUTTON_ID_PREFIX, discussion_channel_to_guild,
+            BUTTON_ID_ACTION_START_PUBLIC, INTERACTION_ID_PREFIX, create_pr_embed,
+            discussion_channel_to_guild,
         },
         data::{config::Config, discussions::DiscussionRecord, forums::ForumRecord},
     },
@@ -91,46 +92,24 @@ pub async fn cr_github_task(
                     continue;
                 }
 
-                // String::truncate might panic, so doing it like this.
-                let embed_description: String = pr_body
-                    .unwrap_or("No description.".into())
-                    .chars()
-                    .take(EMBED_DESC_MAX_LEN)
-                    .collect();
-
                 match main_forum
                     .create_forum_post(
                         &ctx,
                         CreateForumPost::new(
                             format!("{pr_title} #{pr_id}"),
                             CreateMessage::new()
-                                .add_embeds(vec![
-                                    CreateEmbed::new()
-                                        .author(
-                                            CreateEmbedAuthor::new(format!(
-                                                "PR #{pr_id}, submitted by {opened_by}"
-                                            ))
-                                            .url(
-                                                format!(
-                                                    "https://github.com/{}/{}/pull/{pr_id}",
-                                                    gh.repo_owner, gh.repo_name
-                                                ),
-                                            ),
-                                        )
-                                        .title(&pr_title)
-                                        .description(&embed_description),
-                                ])
+                                .add_embed(create_pr_embed(pr_id, pr_title.clone(), opened_by.clone(), pr_body.clone(), &gh))
                                 .components(vec![CreateActionRow::Buttons(vec![
                                     CreateButton::new(format!(
-                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_START_PUBLIC}_{pr_id}"
+                                        "{INTERACTION_ID_PREFIX}_{BUTTON_ID_ACTION_START_PUBLIC}_{pr_id}"
                                     ))
                                     .label("Public review"),
                                     CreateButton::new(format!(
-                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_START_PRIVATE}_{pr_id}"
+                                        "{INTERACTION_ID_PREFIX}_{BUTTON_ID_ACTION_START_PRIVATE}_{pr_id}"
                                     ))
                                     .label("Private review"),
                                     CreateButton::new(format!(
-                                        "{BUTTON_ID_PREFIX}_{BUTTON_ID_ACTION_NOT_NEEDED}_{pr_id}"
+                                        "{INTERACTION_ID_PREFIX}_{BUTTON_ID_ACTION_NOT_NEEDED}_{pr_id}"
                                     ))
                                     .label("No review needed"),
                                 ])]),
@@ -144,10 +123,10 @@ pub async fn cr_github_task(
                             forum_id: main_forum,
                             pr_id,
                             thread_id: post_channel.id,
-                            timer_end: None,
                             pr_title,
                             pr_author: opened_by,
-                            pr_body: Some(embed_description),
+                            pr_body,
+                            ..Default::default()
                         };
 
                         if let Err(()) = discussion.insert(&db).await {
