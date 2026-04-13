@@ -149,7 +149,7 @@ pub async fn start_review_task(
         .await
     {
         error!(
-            "Failed to set under review label for PR #{}: {e:#?}",
+            "Failed to comment about CR review on PR #{}: {e:#?}",
             discussion.pr_id
         );
         return;
