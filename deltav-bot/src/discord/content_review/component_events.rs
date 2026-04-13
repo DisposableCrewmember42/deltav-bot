@@ -4,8 +4,8 @@ use poise::{
     Modal, execute_modal_on_component_interaction,
     serenity_prelude::{
         ComponentInteractionCollector, ComponentInteractionDataKind, CreateForumPost,
-        CreateInputText, CreateInteractionResponse, CreateInteractionResponseMessage,
-        CreateMessage, CreateQuickModal, EditInteractionResponse, InputTextStyle,
+        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
+        EditInteractionResponse,
     },
 };
 use sqlx::{Pool, Sqlite};
