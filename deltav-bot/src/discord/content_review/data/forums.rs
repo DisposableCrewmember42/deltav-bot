@@ -2,7 +2,7 @@ use poise::serenity_prelude::{ChannelId, ForumTagId};
 use sqlx::{Pool, Sqlite};
 use tracing::{error, info, warn};
 
-use crate::discord::data::{config::Config, macros::id_to_int};
+use crate::discord::content_review::data::{config::Config, macros::id_to_int};
 
 #[derive(Debug, Copy, Clone)]
 pub struct ForumRecord {

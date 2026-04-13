@@ -11,12 +11,14 @@ use tracing::{error, info, warn};
 use crate::{
     discord::{
         EMBED_DESC_MAX_LEN,
+        content_review::data::{
+            config::Config, discussions::DiscussionRecord, forums::ForumRecord,
+        },
         content_review::{
             BUTTON_ID_ACTION_NOT_NEEDED, BUTTON_ID_ACTION_START_PRIVATE,
             BUTTON_ID_ACTION_START_PUBLIC, INTERACTION_ID_PREFIX, create_pr_embed,
             discussion_channel_to_guild,
         },
-        data::{config::Config, discussions::DiscussionRecord, forums::ForumRecord},
     },
     github::{GitHub, GitHubMessage},
 };

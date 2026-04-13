@@ -6,7 +6,7 @@ use tracing::error;
 use crate::{
     discord::{
         Context, EMBED_DESC_MAX_LEN, Error,
-        data::{
+        content_review::data::{
             config::Config,
             forums::{ForumRecord, delete_forum_by_channel},
         },
@@ -15,6 +15,7 @@ use crate::{
 };
 
 pub mod component_events;
+pub mod data;
 pub mod github_events;
 
 pub const INTERACTION_ID_PREFIX: &'static str = "cr";

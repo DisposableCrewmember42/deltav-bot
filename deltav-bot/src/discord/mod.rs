@@ -16,7 +16,6 @@ use crate::{
 };
 
 mod content_review;
-mod data;
 
 const EMBED_DESC_MAX_LEN: usize = 4096;
 
