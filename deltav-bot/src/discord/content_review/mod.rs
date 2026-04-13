@@ -168,7 +168,7 @@ pub async fn cr_forum_upsert(
         Ok(_) => {
             ctx.reply("Processed without errors.").await?;
         }
-        Err(_) => {
+        Err(()) => {
             ctx.reply("Internal error occurred while upserting forum.")
                 .await?;
         }
@@ -186,7 +186,7 @@ pub async fn cr_forum_delete(ctx: Context<'_>, forum: ChannelId) -> Result<(), E
         Ok(_) => {
             ctx.reply("Processed without errors.").await?;
         }
-        Err(_) => {
+        Err(()) => {
             ctx.reply("Internal error occurred while deleting forum.")
                 .await?;
         }
