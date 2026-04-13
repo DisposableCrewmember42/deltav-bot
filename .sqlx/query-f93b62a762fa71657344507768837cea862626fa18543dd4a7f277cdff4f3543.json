@@ -19,23 +19,33 @@
         "type_info": "Integer"
       },
       {
-        "name": "timer_end",
+        "name": "review_days_total",
         "ordinal": 3,
         "type_info": "Integer"
       },
       {
-        "name": "pr_title",
+        "name": "review_days_passed",
         "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "review_days_next_micros",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "pr_title",
+        "ordinal": 6,
         "type_info": "Text"
       },
       {
         "name": "pr_author",
-        "ordinal": 5,
+        "ordinal": 7,
         "type_info": "Text"
       },
       {
         "name": "pr_body",
-        "ordinal": 6,
+        "ordinal": 8,
         "type_info": "Text"
       }
     ],
@@ -46,6 +56,8 @@
       false,
       false,
       false,
+      true,
+      true,
       true,
       false,
       false,

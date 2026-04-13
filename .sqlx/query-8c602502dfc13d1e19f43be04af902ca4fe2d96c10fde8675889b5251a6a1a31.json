@@ -19,18 +19,23 @@
         "type_info": "Integer"
       },
       {
-        "name": "tag_cr_denied",
+        "name": "tag_cr_test_merge",
         "ordinal": 3,
         "type_info": "Integer"
       },
       {
-        "name": "tag_pr_closed",
+        "name": "tag_cr_denied",
         "ordinal": 4,
         "type_info": "Integer"
       },
       {
-        "name": "tag_pr_merged",
+        "name": "tag_pr_closed",
         "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tag_pr_merged",
+        "ordinal": 6,
         "type_info": "Integer"
       }
     ],
@@ -38,6 +43,7 @@
       "Right": 1
     },
     "nullable": [
+      false,
       false,
       false,
       false,
